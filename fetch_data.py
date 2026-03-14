@@ -1,9 +1,5 @@
 # fetch_data.py
-# ── Fetches closed trades from cTrader for the past 7 days ────
-# Saves to data/trades.csv — read by app.py
-# Run this before launching the dashboard, or it runs automatically
-# via run.sh
-
+# ── Fetches deals (closed trades) from cTrader for past 7 days ─
 import os, sys, time, warnings
 warnings.filterwarnings("ignore")
 from datetime import datetime, timezone, timedelta
@@ -11,7 +7,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 import pandas as pd
 
-# Load .env from project root
 BASE_DIR = Path(__file__).parent
 load_dotenv(BASE_DIR / ".env")
 
@@ -21,7 +16,6 @@ ACCESS_TOKEN  = os.getenv("CTRADER_ACCESS_TOKEN")
 ACCOUNT_ID    = int(os.getenv("CTRADER_ACCOUNT_ID", "0"))
 HOST          = os.getenv("CTRADER_HOST", "live.ctraderapi.com")
 PORT          = int(os.getenv("CTRADER_PORT", "5035"))
-SYMBOL        = os.getenv("CTRADER_SYMBOL", "XAUUSD")
 
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -29,20 +23,20 @@ OUTPUT = DATA_DIR / "trades.csv"
 
 def validate_config():
     missing = []
-    if not CLIENT_ID or CLIENT_ID == "your_client_id_here":     missing.append("CTRADER_CLIENT_ID")
-    if not CLIENT_SECRET or CLIENT_SECRET == "your_client_secret_here": missing.append("CTRADER_CLIENT_SECRET")
-    if not ACCESS_TOKEN or ACCESS_TOKEN == "your_access_token_here":  missing.append("CTRADER_ACCESS_TOKEN")
-    if ACCOUNT_ID == 0:                                          missing.append("CTRADER_ACCOUNT_ID")
+    if not CLIENT_ID or "your_" in CLIENT_ID:         missing.append("CTRADER_CLIENT_ID")
+    if not CLIENT_SECRET or "your_" in CLIENT_SECRET: missing.append("CTRADER_CLIENT_SECRET")
+    if not ACCESS_TOKEN or "your_" in ACCESS_TOKEN:   missing.append("CTRADER_ACCESS_TOKEN")
+    if ACCOUNT_ID == 0:                               missing.append("CTRADER_ACCOUNT_ID")
     if missing:
         print(f"\n  ✗ Missing in .env: {', '.join(missing)}")
-        print(f"    Copy .env.example → .env and fill in your values\n")
+        print(f"    Fill in your .env file and try again.\n")
         sys.exit(1)
 
 def fetch():
     validate_config()
 
     print("\n  ┌─────────────────────────────────────────┐")
-    print("  │  Fetching trades from cTrader …          │")
+    print("  │  Fetching deals from cTrader …           │")
     print("  └─────────────────────────────────────────┘\n")
 
     try:
@@ -50,7 +44,7 @@ def fetch():
         from ctrader_open_api.messages.OpenApiMessages_pb2 import (
             ProtoOAApplicationAuthReq, ProtoOAApplicationAuthRes,
             ProtoOAAccountAuthReq,     ProtoOAAccountAuthRes,
-            ProtoOAGetClosedTradesReq, ProtoOAGetClosedTradesRes,
+            ProtoOADealListReq,        ProtoOADealListRes,
             ProtoOAErrorRes,
         )
         from twisted.internet import reactor
@@ -58,26 +52,24 @@ def fetch():
         print(f"  ✗ Import error: {e}")
         sys.exit(1)
 
-    now_ms   = int(time.time() * 1000)
-    week_ms  = now_ms - (7 * 24 * 60 * 60 * 1000)
+    now_ms  = int(time.time() * 1000)
+    week_ms = now_ms - (7 * 24 * 60 * 60 * 1000)
 
     state = {"done": False, "error": None}
-
     client = Client(HOST, PORT, TcpProtocol)
 
     APP_AUTH_RES     = ProtoOAApplicationAuthRes().payloadType
     ACCOUNT_AUTH_RES = ProtoOAAccountAuthRes().payloadType
-    TRADES_RES       = ProtoOAGetClosedTradesRes().payloadType
+    DEAL_LIST_RES    = ProtoOADealListRes().payloadType
     ERROR_RES        = ProtoOAErrorRes().payloadType
 
     def extract(message, cls):
-        try:
-            return Protobuf.extract(message, cls)
+        try:    return Protobuf.extract(message, cls)
         except TypeError:
             obj = cls(); obj.ParseFromString(message.payload); return obj
 
     def on_connected(c):
-        print("  ✓ Connected")
+        print("  ✓ Connected to cTrader")
         req = ProtoOAApplicationAuthReq()
         req.clientId = CLIENT_ID; req.clientSecret = CLIENT_SECRET
         c.send(req)
@@ -100,39 +92,54 @@ def fetch():
 
         elif ptype == ACCOUNT_AUTH_RES:
             print("  ✓ Account authenticated")
-            print(f"  → Fetching closed trades for past 7 days …")
-            req = ProtoOAGetClosedTradesReq()
+            print(f"  → Requesting deals for past 7 days…")
+            req = ProtoOADealListReq()
             req.ctidTraderAccountId = ACCOUNT_ID
-            req.fromTimestamp = week_ms
-            req.toTimestamp   = now_ms
+            req.fromTimestamp       = week_ms
+            req.toTimestamp         = now_ms
             c.send(req)
 
-        elif ptype == TRADES_RES:
-            res    = extract(message, ProtoOAGetClosedTradesRes)
-            trades = res.closedTrade
-            print(f"  ✓ Received {len(trades)} closed trades")
+        elif ptype == DEAL_LIST_RES:
+            res   = extract(message, ProtoOADealListRes)
+            deals = res.deal
+            print(f"  ✓ Received {len(deals)} deals")
+
             rows = []
-            for tr in trades:
-                pos = tr.position
+            for d in deals:
+                # Only include filled/closed deals (dealStatus 2 = FILLED)
+                if d.dealStatus != 2:
+                    continue
                 rows.append({
-                    "trade_id":    tr.closingDealId,
-                    "symbol_id":   pos.tradeData.symbolId,
-                    "direction":   "BUY" if pos.tradeData.tradeSide == 1 else "SELL",
-                    "volume":      pos.tradeData.volume / 100,
-                    "open_price":  pos.price,
-                    "close_price": tr.closePrice,
-                    "open_time":   datetime.fromtimestamp(
-                                       pos.tradeData.openTimestamp / 1000,
-                                       tz=timezone.utc),
-                    "close_time":  datetime.fromtimestamp(
-                                       tr.closeTimestamp / 1000,
-                                       tz=timezone.utc),
-                    "pnl":         tr.closedBalance / 100,
-                    "commission":  tr.commission / 100 if hasattr(tr, "commission") else 0,
+                    "deal_id":      d.dealId,
+                    "position_id":  d.positionId,
+                    "symbol_id":    d.symbolId,
+                    "direction":    "BUY" if d.tradeSide == 1 else "SELL",
+                    "volume":       d.volume / 100,
+                    "fill_price":   d.executionPrice,
+                    "close_price":  d.closePositionDetail.entryPrice if d.HasField("closePositionDetail") else 0,
+                    "time":         datetime.fromtimestamp(d.executionTimestamp / 1000, tz=timezone.utc),
+                    "pnl":          d.closePositionDetail.grossProfit / 100 if d.HasField("closePositionDetail") else 0,
+                    "commission":   d.commission / 100,
+                    "is_closing":   d.HasField("closePositionDetail"),
                 })
+
             df = pd.DataFrame(rows)
-            df.to_csv(OUTPUT, index=False)
-            print(f"  ✓ Saved → {OUTPUT}")
+
+            if df.empty:
+                print("  ⚠  No filled deals found in the past 7 days.")
+                print("     This could mean:")
+                print("     - No trades were made this week")
+                print("     - Try extending the date range in fetch_data.py")
+            else:
+                df.to_csv(OUTPUT, index=False)
+                print(f"  ✓ Saved {len(df)} deals → {OUTPUT}")
+                # Print a quick summary
+                closing = df[df["is_closing"]]
+                if not closing.empty:
+                    total_pnl = closing["pnl"].sum()
+                    print(f"  ✓ Closed positions: {len(closing)}")
+                    print(f"  ✓ Total P&L: £{total_pnl:.2f}")
+
             state["done"] = True
             try: reactor.stop()
             except: pass
@@ -152,6 +159,8 @@ def fetch():
     if state["error"]:
         print(f"\n  ✗ Error: {state['error']}\n")
         sys.exit(1)
+
+    print()
 
 if __name__ == "__main__":
     fetch()
