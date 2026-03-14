@@ -1,127 +1,202 @@
 # app.py
 # ── Proof of Concept App ──────────────────────────────────────
-# A simple Dash app we'll use to practice making and tracking changes.
-# Version: 1.0.0
+# Version: 1.2.0 — added min/max tracker + sparkline history chart
 
 import dash
-from dash import html, dcc, Input, Output, callback
+from dash import html, dcc, Input, Output, State, callback, ctx
 import plotly.graph_objects as go
 from datetime import datetime
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.2.0"
 
 app = dash.Dash(__name__, title="POC App")
 
-BG      = "#0f0f0f"
-CARD    = "#1a1a1a"
-BORDER  = "#2a2a2a"
-TEXT    = "#e0e0e0"
-MUTED   = "#666666"
-ACCENT  = "#00e5ff"
+THEMES = {
+    "dark":  {"bg": "#0f0f0f", "card": "#1a1a1a", "border": "#2a2a2a",
+              "text": "#e0e0e0", "muted": "#666666", "accent": "#00e5ff"},
+    "green": {"bg": "#0a0f0a", "card": "#111a11", "border": "#1a2a1a",
+              "text": "#d0e8d0", "muted": "#4a664a", "accent": "#00ff88"},
+    "amber": {"bg": "#0f0d08", "card": "#1a1708", "border": "#2a2408",
+              "text": "#e8e0c8", "muted": "#665a30", "accent": "#ffb300"},
+}
 
-app.layout = html.Div(style={"background": BG, "minHeight": "100vh",
-                              "display": "flex", "flexDirection": "column",
-                              "alignItems": "center", "justifyContent": "center",
-                              "fontFamily": "monospace", "color": TEXT},
-children=[
-    html.Div(style={"background": CARD, "border": f"1px solid {BORDER}",
-                    "borderRadius": "16px", "padding": "48px",
-                    "width": "480px", "textAlign": "center"},
-    children=[
+def make_sparkline(history, accent, border):
+    if len(history) < 2:
+        fig = go.Figure()
+    else:
+        fig = go.Figure(go.Scatter(
+            x=list(range(len(history))),
+            y=history,
+            mode="lines",
+            line={"color": accent, "width": 2, "shape": "spline"},
+            fill="tozeroy",
+            fillcolor=accent.replace(")", ",0.08)").replace("rgb", "rgba") if "rgb" in accent else accent + "14",
+        ))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor ="rgba(0,0,0,0)",
+        margin={"t": 0, "r": 0, "b": 0, "l": 0},
+        height=60,
+        xaxis={"visible": False},
+        yaxis={"visible": False},
+        showlegend=False,
+    )
+    return fig
+
+app.layout = html.Div(id="root", style={
+    "background": "#0f0f0f", "minHeight": "100vh",
+    "display": "flex", "flexDirection": "column",
+    "alignItems": "center", "justifyContent": "center",
+    "fontFamily": "monospace", "color": "#e0e0e0"
+}, children=[
+    html.Div(style={
+        "background": "#1a1a1a", "border": "1px solid #2a2a2a",
+        "borderRadius": "16px", "padding": "40px",
+        "width": "480px", "textAlign": "center"
+    }, children=[
 
         html.Div("POC APP", style={"fontSize": "11px", "letterSpacing": "4px",
-                                    "color": MUTED, "marginBottom": "8px"}),
-        html.Div(f"v{APP_VERSION}", style={"fontSize": "28px", "fontWeight": "800",
-                                           "color": ACCENT, "marginBottom": "40px"}),
+                                    "color": "#666", "marginBottom": "6px"}),
+        html.Div(f"v{APP_VERSION}", style={"fontSize": "22px", "fontWeight": "800",
+                                           "color": "#00e5ff", "marginBottom": "20px"}),
 
-        # Counter display
+        # Theme switcher
+        html.Div(style={"display": "flex", "gap": "8px",
+                        "justifyContent": "center", "marginBottom": "28px"},
+        children=[
+            html.Button("Dark",  id="theme-dark",  n_clicks=0,
+                        style={"fontSize": "11px", "padding": "4px 12px", "background": "#1a1a1a",
+                               "color": "#00e5ff", "border": "1px solid #00e5ff",
+                               "borderRadius": "6px", "cursor": "pointer"}),
+            html.Button("Green", id="theme-green", n_clicks=0,
+                        style={"fontSize": "11px", "padding": "4px 12px", "background": "#1a1a1a",
+                               "color": "#666", "border": "1px solid #2a2a2a",
+                               "borderRadius": "6px", "cursor": "pointer"}),
+            html.Button("Amber", id="theme-amber", n_clicks=0,
+                        style={"fontSize": "11px", "padding": "4px 12px", "background": "#1a1a1a",
+                               "color": "#666", "border": "1px solid #2a2a2a",
+                               "borderRadius": "6px", "cursor": "pointer"}),
+        ]),
+
+        # Counter
         html.Div(id="counter-display",
                  style={"fontSize": "80px", "fontWeight": "800",
-                        "color": TEXT, "lineHeight": "1", "marginBottom": "32px"}),
+                        "color": "#e0e0e0", "lineHeight": "1", "marginBottom": "4px"}),
+
+        # Click rate
+        html.Div(id="rate-display",
+                 style={"fontSize": "11px", "color": "#666", "marginBottom": "20px"}),
+
+        # ── NEW: Min / Max stat pills ──────────────────────────
+        html.Div(id="minmax-display",
+                 style={"display": "flex", "gap": "10px", "justifyContent": "center",
+                        "marginBottom": "20px"}),
+
+        # ── NEW: Sparkline chart ───────────────────────────────
+        html.Div(style={"marginBottom": "24px", "borderRadius": "8px",
+                        "overflow": "hidden", "border": "1px solid #2a2a2a"},
+        children=[
+            html.Div("counter history", style={"fontSize": "9px", "letterSpacing": "2px",
+                                                "textTransform": "uppercase", "color": "#444",
+                                                "padding": "8px 12px 0"}),
+            dcc.Graph(id="sparkline", config={"displayModeBar": False},
+                      style={"height": "60px"},
+                      figure=make_sparkline([], "#00e5ff", "#2a2a2a")),
+        ]),
 
         # Buttons
-        html.Div(style={"display": "flex", "gap": "12px", "justifyContent": "center",
-                        "marginBottom": "32px"},
+        html.Div(style={"display": "flex", "gap": "12px",
+                        "justifyContent": "center", "marginBottom": "28px"},
         children=[
             html.Button("−", id="btn-dec", n_clicks=0,
                         style={"fontSize": "24px", "width": "64px", "height": "64px",
-                               "background": CARD, "color": TEXT,
-                               "border": f"1px solid {BORDER}", "borderRadius": "12px",
+                               "background": "#1a1a1a", "color": "#e0e0e0",
+                               "border": "1px solid #2a2a2a", "borderRadius": "12px",
                                "cursor": "pointer"}),
             html.Button("Reset", id="btn-reset", n_clicks=0,
                         style={"fontSize": "13px", "padding": "0 20px", "height": "64px",
-                               "background": CARD, "color": MUTED,
-                               "border": f"1px solid {BORDER}", "borderRadius": "12px",
+                               "background": "#1a1a1a", "color": "#666",
+                               "border": "1px solid #2a2a2a", "borderRadius": "12px",
                                "cursor": "pointer"}),
             html.Button("+", id="btn-inc", n_clicks=0,
                         style={"fontSize": "24px", "width": "64px", "height": "64px",
-                               "background": ACCENT, "color": BG,
+                               "background": "#00e5ff", "color": "#0f0f0f",
                                "border": "none", "borderRadius": "12px",
                                "cursor": "pointer", "fontWeight": "800"}),
         ]),
 
         # Activity log
-        html.Div(style={"textAlign": "left", "borderTop": f"1px solid {BORDER}",
-                        "paddingTop": "20px"},
+        html.Div(style={"textAlign": "left", "borderTop": "1px solid #2a2a2a",
+                        "paddingTop": "16px"},
         children=[
             html.Div("Activity log", style={"fontSize": "10px", "letterSpacing": "2px",
-                                             "textTransform": "uppercase", "color": MUTED,
-                                             "marginBottom": "10px"}),
+                                             "textTransform": "uppercase", "color": "#666",
+                                             "marginBottom": "8px"}),
             html.Div(id="activity-log",
-                     style={"fontSize": "11px", "color": MUTED,
-                            "height": "80px", "overflowY": "auto",
-                            "display": "flex", "flexDirection": "column", "gap": "4px"}),
+                     style={"fontSize": "11px", "color": "#666", "height": "80px",
+                            "overflowY": "auto", "display": "flex",
+                            "flexDirection": "column", "gap": "4px"}),
         ]),
     ]),
 
     html.Div(f"version {APP_VERSION}  ·  edit app.py to make changes",
-             style={"marginTop": "24px", "fontSize": "11px", "color": MUTED}),
+             style={"marginTop": "20px", "fontSize": "11px", "color": "#444"}),
 
-    # Hidden state stores
+    # State stores
     dcc.Store(id="counter-store", data=0),
     dcc.Store(id="log-store",     data=[]),
+    dcc.Store(id="theme-store",   data="dark"),
+    dcc.Store(id="clicks-store",  data={"count": 0, "start": None}),
+    dcc.Store(id="history-store", data=[0]),
+    dcc.Store(id="minmax-store",  data={"min": 0, "max": 0}),
 ])
 
 
 @callback(
-    Output("counter-store", "data"),
-    Output("log-store",     "data"),
-    Input("btn-inc",   "n_clicks"),
-    Input("btn-dec",   "n_clicks"),
-    Input("btn-reset", "n_clicks"),
+    Output("root", "style"),
+    Output("theme-store", "data"),
+    Input("theme-dark",  "n_clicks"),
+    Input("theme-green", "n_clicks"),
+    Input("theme-amber", "n_clicks"),
     prevent_initial_call=True,
 )
-def update_counter(inc, dec, reset):
-    from dash import ctx
-    from dash.exceptions import PreventUpdate
+def switch_theme(*_):
+    tk = {"theme-dark": "dark", "theme-green": "green",
+          "theme-amber": "amber"}.get(ctx.triggered_id, "dark")
+    t = THEMES[tk]
+    return {"background": t["bg"], "minHeight": "100vh", "display": "flex",
+            "flexDirection": "column", "alignItems": "center",
+            "justifyContent": "center", "fontFamily": "monospace",
+            "color": t["text"]}, tk
 
-    store_data   = dash.callback_context.states if hasattr(dash.callback_context, "states") else {}
-    triggered_id = ctx.triggered_id
-
-    # Read current value via pattern (workaround for stateless callbacks)
-    # We pass count through the log length as a proxy — simpler: use State
-    return dash.no_update, dash.no_update
-
-
-# Proper callback with State
-from dash import State
 
 @callback(
     Output("counter-display", "children"),
-    Output("counter-store",   "data",    allow_duplicate=True),
-    Output("log-store",       "data",    allow_duplicate=True),
+    Output("counter-store",   "data"),
+    Output("log-store",       "data"),
     Output("activity-log",    "children"),
-    Input("btn-inc",    "n_clicks"),
-    Input("btn-dec",    "n_clicks"),
-    Input("btn-reset",  "n_clicks"),
+    Output("clicks-store",    "data"),
+    Output("rate-display",    "children"),
+    Output("history-store",   "data"),
+    Output("minmax-store",    "data"),
+    Output("sparkline",       "figure"),
+    Output("minmax-display",  "children"),
+    Input("btn-inc",   "n_clicks"),
+    Input("btn-dec",   "n_clicks"),
+    Input("btn-reset", "n_clicks"),
     State("counter-store", "data"),
     State("log-store",     "data"),
+    State("clicks-store",  "data"),
+    State("history-store", "data"),
+    State("minmax-store",  "data"),
+    State("theme-store",   "data"),
     prevent_initial_call=True,
 )
-def handle_buttons(inc, dec, reset, count, log):
-    from dash import ctx
+def handle_buttons(inc, dec, reset, count, log, clicks, history, minmax, theme_key):
     triggered = ctx.triggered_id
-    ts = datetime.now().strftime("%H:%M:%S")
+    ts  = datetime.now().strftime("%H:%M:%S")
+    now = datetime.now().timestamp()
+    t   = THEMES[theme_key]
 
     if triggered == "btn-inc":
         count += 1
@@ -133,11 +208,49 @@ def handle_buttons(inc, dec, reset, count, log):
         log.append(f"{ts}  reset  →  0")
         count = 0
 
-    log = log[-6:]   # keep last 6 entries
+    # History for sparkline (keep last 40 points)
+    history.append(count)
+    history = history[-40:]
 
-    log_items = [html.Div(entry) for entry in reversed(log)]
+    # Min / max
+    minmax["min"] = min(minmax["min"], count)
+    minmax["max"] = max(minmax["max"], count)
 
-    return str(count), count, log, log_items
+    # Click rate
+    if clicks["start"] is None:
+        clicks = {"count": 1, "start": now}
+    else:
+        clicks["count"] += 1
+    elapsed   = max(now - (clicks["start"] or now), 1)
+    rate      = round(clicks["count"] / elapsed, 2)
+    rate_text = f"{rate} clicks/sec  ·  {clicks['count']} total"
+
+    log      = log[-6:]
+    log_items = [html.Div(e) for e in reversed(log)]
+
+    # Sparkline
+    spark = make_sparkline(history, t["accent"], t["border"])
+
+    # Min/max pills
+    pill_style = lambda c: {
+        "fontSize": "11px", "padding": "4px 14px",
+        "borderRadius": "20px", "border": f"1px solid {t['border']}",
+        "color": c, "background": t["card"],
+    }
+    minmax_pills = [
+        html.Div([html.Span("min  ", style={"color": t["muted"]}),
+                  html.Span(str(minmax["min"]), style={"color": "#ff6b6b", "fontWeight": "700"})],
+                 style=pill_style("#ff6b6b")),
+        html.Div([html.Span("now  ", style={"color": t["muted"]}),
+                  html.Span(str(count), style={"color": t["accent"], "fontWeight": "700"})],
+                 style=pill_style(t["accent"])),
+        html.Div([html.Span("max  ", style={"color": t["muted"]}),
+                  html.Span(str(minmax["max"]), style={"color": "#a8ff78", "fontWeight": "700"})],
+                 style=pill_style("#a8ff78")),
+    ]
+
+    return (str(count), count, log, log_items, clicks,
+            rate_text, history, minmax, spark, minmax_pills)
 
 
 @callback(
