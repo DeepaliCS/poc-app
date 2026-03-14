@@ -1,268 +1,246 @@
 # app.py
-# ── Proof of Concept App ──────────────────────────────────────
-# Version: 1.2.0 — added min/max tracker + sparkline history chart
+# ── cTrader Trades Dashboard ──────────────────────────────────
+# Version: 2.0.0
 
-import dash
-from dash import html, dcc, Input, Output, State, callback, ctx
-import plotly.graph_objects as go
+import os
+from pathlib import Path
 from datetime import datetime
+import pandas as pd
+import plotly.graph_objects as go
+from dash import Dash, html, dcc, callback, Input, Output
+from dotenv import load_dotenv
 
-APP_VERSION = "1.2.0"
+BASE_DIR = Path(__file__).parent
+load_dotenv(BASE_DIR / ".env")
 
-app = dash.Dash(__name__, title="POC App")
+SYMBOL    = os.getenv("CTRADER_SYMBOL", "XAUUSD")
+DATA_FILE = BASE_DIR / "data" / "trades.csv"
+APP_VERSION = "2.0.0"
 
-THEMES = {
-    "dark":  {"bg": "#0f0f0f", "card": "#1a1a1a", "border": "#2a2a2a",
-              "text": "#e0e0e0", "muted": "#666666", "accent": "#00e5ff"},
-    "green": {"bg": "#0a0f0a", "card": "#111a11", "border": "#1a2a1a",
-              "text": "#d0e8d0", "muted": "#4a664a", "accent": "#00ff88"},
-    "amber": {"bg": "#0f0d08", "card": "#1a1708", "border": "#2a2408",
-              "text": "#e8e0c8", "muted": "#665a30", "accent": "#ffb300"},
-}
+BG     = "#0a0a0a"
+PANEL  = "#111111"
+CARD   = "#161616"
+BORDER = "#222222"
+TEXT   = "#e0e0e0"
+MUTED  = "#555555"
+GOLD   = "#f0b429"
+UP     = "#26a69a"
+DOWN   = "#ef5350"
 
-def make_sparkline(history, accent, border):
-    if len(history) < 2:
-        fig = go.Figure()
-    else:
-        fig = go.Figure(go.Scatter(
-            x=list(range(len(history))),
-            y=history,
-            mode="lines",
-            line={"color": accent, "width": 2, "shape": "spline"},
-            fill="tozeroy",
-            fillcolor=accent.replace(")", ",0.08)").replace("rgb", "rgba") if "rgb" in accent else accent + "14",
-        ))
+app = Dash(__name__, title=f"{SYMBOL} Trades")
+
+def load_trades():
+    if not DATA_FILE.exists():
+        return None
+    df = pd.read_csv(DATA_FILE, parse_dates=["open_time", "close_time"])
+    return df if not df.empty else None
+
+def stat_card(label, value, color=TEXT, sub=None):
+    return html.Div([
+        html.Div(label, style={"fontSize": "9px", "letterSpacing": "2px",
+                               "textTransform": "uppercase",
+                               "color": MUTED, "marginBottom": "6px"}),
+        html.Div(value, style={"fontSize": "22px", "fontWeight": "800", "color": color}),
+        html.Div(sub, style={"fontSize": "10px", "color": MUTED, "marginTop": "2px"}) if sub else None,
+    ], style={"background": CARD, "border": f"1px solid {BORDER}",
+              "borderRadius": "10px", "padding": "16px 20px"})
+
+app.layout = html.Div(
+    style={"background": BG, "minHeight": "100vh", "padding": "28px",
+           "fontFamily": "monospace", "color": TEXT},
+    children=[
+        html.Div(style={"display": "flex", "justifyContent": "space-between",
+                        "alignItems": "flex-end", "marginBottom": "28px",
+                        "paddingBottom": "20px", "borderBottom": f"1px solid {BORDER}"},
+        children=[
+            html.Div([
+                html.Span(SYMBOL, style={"fontSize": "24px", "fontWeight": "800",
+                                         "color": GOLD, "letterSpacing": "2px"}),
+                html.Span("  TRADES · PAST 7 DAYS",
+                          style={"fontSize": "10px", "color": MUTED, "letterSpacing": "3px"}),
+            ]),
+            html.Div([
+                html.Div(id="last-updated", style={"fontSize": "10px", "color": MUTED, "textAlign": "right"}),
+                html.Button("⟳ Refresh", id="refresh-btn", n_clicks=0,
+                            style={"marginTop": "6px", "fontSize": "11px", "padding": "6px 16px",
+                                   "background": CARD, "color": TEXT,
+                                   "border": f"1px solid {BORDER}",
+                                   "borderRadius": "6px", "cursor": "pointer"}),
+            ]),
+        ]),
+        html.Div(id="stat-cards",
+                 style={"display": "grid", "gridTemplateColumns": "repeat(5,1fr)",
+                        "gap": "12px", "marginBottom": "20px"}),
+        html.Div([
+            html.Div("Cumulative P&L", style={"fontSize": "9px", "letterSpacing": "2px",
+                                               "textTransform": "uppercase",
+                                               "color": MUTED, "marginBottom": "12px"}),
+            dcc.Graph(id="pnl-chart", config={"displayModeBar": False}, style={"height": "280px"}),
+        ], style={"background": PANEL, "border": f"1px solid {BORDER}",
+                  "borderRadius": "10px", "padding": "20px", "marginBottom": "16px"}),
+        html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr",
+                        "gap": "16px", "marginBottom": "16px"},
+        children=[
+            html.Div([
+                html.Div("P&L per trade", style={"fontSize": "9px", "letterSpacing": "2px",
+                                                  "textTransform": "uppercase",
+                                                  "color": MUTED, "marginBottom": "12px"}),
+                dcc.Graph(id="bar-chart", config={"displayModeBar": False}, style={"height": "220px"}),
+            ], style={"background": PANEL, "border": f"1px solid {BORDER}",
+                      "borderRadius": "10px", "padding": "20px"}),
+            html.Div([
+                html.Div("Buy vs Sell", style={"fontSize": "9px", "letterSpacing": "2px",
+                                               "textTransform": "uppercase",
+                                               "color": MUTED, "marginBottom": "12px"}),
+                dcc.Graph(id="donut-chart", config={"displayModeBar": False}, style={"height": "220px"}),
+            ], style={"background": PANEL, "border": f"1px solid {BORDER}",
+                      "borderRadius": "10px", "padding": "20px"}),
+        ]),
+        html.Div([
+            html.Div("Trade log", style={"fontSize": "9px", "letterSpacing": "2px",
+                                          "textTransform": "uppercase",
+                                          "color": MUTED, "marginBottom": "12px"}),
+            html.Div(id="trade-table"),
+        ], style={"background": PANEL, "border": f"1px solid {BORDER}",
+                  "borderRadius": "10px", "padding": "20px"}),
+        dcc.Interval(id="interval", interval=60_000, n_intervals=0),
+    ]
+)
+
+def empty_fig():
+    fig = go.Figure()
     fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor ="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=PANEL,
+        annotations=[{"text": "No data — run fetch_data.py first",
+                      "xref": "paper", "yref": "paper", "x": 0.5, "y": 0.5,
+                      "showarrow": False, "font": {"size": 13, "color": MUTED}}],
+        xaxis={"visible": False}, yaxis={"visible": False},
         margin={"t": 0, "r": 0, "b": 0, "l": 0},
-        height=60,
-        xaxis={"visible": False},
-        yaxis={"visible": False},
-        showlegend=False,
     )
     return fig
 
-app.layout = html.Div(id="root", style={
-    "background": "#0f0f0f", "minHeight": "100vh",
-    "display": "flex", "flexDirection": "column",
-    "alignItems": "center", "justifyContent": "center",
-    "fontFamily": "monospace", "color": "#e0e0e0"
-}, children=[
-    html.Div(style={
-        "background": "#1a1a1a", "border": "1px solid #2a2a2a",
-        "borderRadius": "16px", "padding": "40px",
-        "width": "480px", "textAlign": "center"
-    }, children=[
-
-        html.Div("POC APP", style={"fontSize": "11px", "letterSpacing": "4px",
-                                    "color": "#666", "marginBottom": "6px"}),
-        html.Div(f"v{APP_VERSION}", style={"fontSize": "22px", "fontWeight": "800",
-                                           "color": "#00e5ff", "marginBottom": "20px"}),
-
-        # Theme switcher
-        html.Div(style={"display": "flex", "gap": "8px",
-                        "justifyContent": "center", "marginBottom": "28px"},
-        children=[
-            html.Button("Dark",  id="theme-dark",  n_clicks=0,
-                        style={"fontSize": "11px", "padding": "4px 12px", "background": "#1a1a1a",
-                               "color": "#00e5ff", "border": "1px solid #00e5ff",
-                               "borderRadius": "6px", "cursor": "pointer"}),
-            html.Button("Green", id="theme-green", n_clicks=0,
-                        style={"fontSize": "11px", "padding": "4px 12px", "background": "#1a1a1a",
-                               "color": "#666", "border": "1px solid #2a2a2a",
-                               "borderRadius": "6px", "cursor": "pointer"}),
-            html.Button("Amber", id="theme-amber", n_clicks=0,
-                        style={"fontSize": "11px", "padding": "4px 12px", "background": "#1a1a1a",
-                               "color": "#666", "border": "1px solid #2a2a2a",
-                               "borderRadius": "6px", "cursor": "pointer"}),
-        ]),
-
-        # Counter
-        html.Div(id="counter-display",
-                 style={"fontSize": "80px", "fontWeight": "800",
-                        "color": "#e0e0e0", "lineHeight": "1", "marginBottom": "4px"}),
-
-        # Click rate
-        html.Div(id="rate-display",
-                 style={"fontSize": "11px", "color": "#666", "marginBottom": "20px"}),
-
-        # ── NEW: Min / Max stat pills ──────────────────────────
-        html.Div(id="minmax-display",
-                 style={"display": "flex", "gap": "10px", "justifyContent": "center",
-                        "marginBottom": "20px"}),
-
-        # ── NEW: Sparkline chart ───────────────────────────────
-        html.Div(style={"marginBottom": "24px", "borderRadius": "8px",
-                        "overflow": "hidden", "border": "1px solid #2a2a2a"},
-        children=[
-            html.Div("counter history", style={"fontSize": "9px", "letterSpacing": "2px",
-                                                "textTransform": "uppercase", "color": "#444",
-                                                "padding": "8px 12px 0"}),
-            dcc.Graph(id="sparkline", config={"displayModeBar": False},
-                      style={"height": "60px"},
-                      figure=make_sparkline([], "#00e5ff", "#2a2a2a")),
-        ]),
-
-        # Buttons
-        html.Div(style={"display": "flex", "gap": "12px",
-                        "justifyContent": "center", "marginBottom": "28px"},
-        children=[
-            html.Button("−", id="btn-dec", n_clicks=0,
-                        style={"fontSize": "24px", "width": "64px", "height": "64px",
-                               "background": "#1a1a1a", "color": "#e0e0e0",
-                               "border": "1px solid #2a2a2a", "borderRadius": "12px",
-                               "cursor": "pointer"}),
-            html.Button("Reset", id="btn-reset", n_clicks=0,
-                        style={"fontSize": "13px", "padding": "0 20px", "height": "64px",
-                               "background": "#1a1a1a", "color": "#666",
-                               "border": "1px solid #2a2a2a", "borderRadius": "12px",
-                               "cursor": "pointer"}),
-            html.Button("+", id="btn-inc", n_clicks=0,
-                        style={"fontSize": "24px", "width": "64px", "height": "64px",
-                               "background": "#00e5ff", "color": "#0f0f0f",
-                               "border": "none", "borderRadius": "12px",
-                               "cursor": "pointer", "fontWeight": "800"}),
-        ]),
-
-        # Activity log
-        html.Div(style={"textAlign": "left", "borderTop": "1px solid #2a2a2a",
-                        "paddingTop": "16px"},
-        children=[
-            html.Div("Activity log", style={"fontSize": "10px", "letterSpacing": "2px",
-                                             "textTransform": "uppercase", "color": "#666",
-                                             "marginBottom": "8px"}),
-            html.Div(id="activity-log",
-                     style={"fontSize": "11px", "color": "#666", "height": "80px",
-                            "overflowY": "auto", "display": "flex",
-                            "flexDirection": "column", "gap": "4px"}),
-        ]),
-    ]),
-
-    html.Div(f"version {APP_VERSION}  ·  edit app.py to make changes",
-             style={"marginTop": "20px", "fontSize": "11px", "color": "#444"}),
-
-    # State stores
-    dcc.Store(id="counter-store", data=0),
-    dcc.Store(id="log-store",     data=[]),
-    dcc.Store(id="theme-store",   data="dark"),
-    dcc.Store(id="clicks-store",  data={"count": 0, "start": None}),
-    dcc.Store(id="history-store", data=[0]),
-    dcc.Store(id="minmax-store",  data={"min": 0, "max": 0}),
-])
-
+def base_layout():
+    return dict(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=PANEL,
+        font={"family": "monospace", "color": TEXT, "size": 11},
+        margin={"t": 10, "r": 10, "b": 40, "l": 60},
+        xaxis={"gridcolor": BORDER, "zerolinecolor": BORDER, "tickfont": {"color": MUTED}},
+        yaxis={"gridcolor": BORDER, "zerolinecolor": BORDER,
+               "tickfont": {"color": MUTED}, "side": "right"},
+        legend={"bgcolor": "rgba(0,0,0,0)", "font": {"color": MUTED}},
+        hovermode="x unified",
+        hoverlabel={"bgcolor": CARD, "font": {"color": TEXT, "family": "monospace"}},
+    )
 
 @callback(
-    Output("root", "style"),
-    Output("theme-store", "data"),
-    Input("theme-dark",  "n_clicks"),
-    Input("theme-green", "n_clicks"),
-    Input("theme-amber", "n_clicks"),
-    prevent_initial_call=True,
+    Output("stat-cards",   "children"),
+    Output("pnl-chart",    "figure"),
+    Output("bar-chart",    "figure"),
+    Output("donut-chart",  "figure"),
+    Output("trade-table",  "children"),
+    Output("last-updated", "children"),
+    Input("interval",      "n_intervals"),
+    Input("refresh-btn",   "n_clicks"),
 )
-def switch_theme(*_):
-    tk = {"theme-dark": "dark", "theme-green": "green",
-          "theme-amber": "amber"}.get(ctx.triggered_id, "dark")
-    t = THEMES[tk]
-    return {"background": t["bg"], "minHeight": "100vh", "display": "flex",
-            "flexDirection": "column", "alignItems": "center",
-            "justifyContent": "center", "fontFamily": "monospace",
-            "color": t["text"]}, tk
+def update(_i, _r):
+    df = load_trades()
+    if df is None:
+        empty = empty_fig()
+        cards = [stat_card("No data", "—") for _ in range(5)]
+        no_data = html.Div("Run fetch_data.py to load your trades.",
+                           style={"color": MUTED, "fontSize": "12px", "padding": "20px 0"})
+        return cards, empty, empty, empty, no_data, "No data loaded"
 
+    total_pnl   = df["pnl"].sum()
+    win_trades  = df[df["pnl"] > 0]
+    loss_trades = df[df["pnl"] < 0]
+    win_rate    = len(win_trades) / len(df) * 100 if len(df) else 0
+    pnl_color   = UP if total_pnl >= 0 else DOWN
+    sym         = "+" if total_pnl >= 0 else ""
 
-@callback(
-    Output("counter-display", "children"),
-    Output("counter-store",   "data"),
-    Output("log-store",       "data"),
-    Output("activity-log",    "children"),
-    Output("clicks-store",    "data"),
-    Output("rate-display",    "children"),
-    Output("history-store",   "data"),
-    Output("minmax-store",    "data"),
-    Output("sparkline",       "figure"),
-    Output("minmax-display",  "children"),
-    Input("btn-inc",   "n_clicks"),
-    Input("btn-dec",   "n_clicks"),
-    Input("btn-reset", "n_clicks"),
-    State("counter-store", "data"),
-    State("log-store",     "data"),
-    State("clicks-store",  "data"),
-    State("history-store", "data"),
-    State("minmax-store",  "data"),
-    State("theme-store",   "data"),
-    prevent_initial_call=True,
-)
-def handle_buttons(inc, dec, reset, count, log, clicks, history, minmax, theme_key):
-    triggered = ctx.triggered_id
-    ts  = datetime.now().strftime("%H:%M:%S")
-    now = datetime.now().timestamp()
-    t   = THEMES[theme_key]
-
-    if triggered == "btn-inc":
-        count += 1
-        log.append(f"{ts}  +1  →  {count}")
-    elif triggered == "btn-dec":
-        count -= 1
-        log.append(f"{ts}  -1  →  {count}")
-    elif triggered == "btn-reset":
-        log.append(f"{ts}  reset  →  0")
-        count = 0
-
-    # History for sparkline (keep last 40 points)
-    history.append(count)
-    history = history[-40:]
-
-    # Min / max
-    minmax["min"] = min(minmax["min"], count)
-    minmax["max"] = max(minmax["max"], count)
-
-    # Click rate
-    if clicks["start"] is None:
-        clicks = {"count": 1, "start": now}
-    else:
-        clicks["count"] += 1
-    elapsed   = max(now - (clicks["start"] or now), 1)
-    rate      = round(clicks["count"] / elapsed, 2)
-    rate_text = f"{rate} clicks/sec  ·  {clicks['count']} total"
-
-    log      = log[-6:]
-    log_items = [html.Div(e) for e in reversed(log)]
-
-    # Sparkline
-    spark = make_sparkline(history, t["accent"], t["border"])
-
-    # Min/max pills
-    pill_style = lambda c: {
-        "fontSize": "11px", "padding": "4px 14px",
-        "borderRadius": "20px", "border": f"1px solid {t['border']}",
-        "color": c, "background": t["card"],
-    }
-    minmax_pills = [
-        html.Div([html.Span("min  ", style={"color": t["muted"]}),
-                  html.Span(str(minmax["min"]), style={"color": "#ff6b6b", "fontWeight": "700"})],
-                 style=pill_style("#ff6b6b")),
-        html.Div([html.Span("now  ", style={"color": t["muted"]}),
-                  html.Span(str(count), style={"color": t["accent"], "fontWeight": "700"})],
-                 style=pill_style(t["accent"])),
-        html.Div([html.Span("max  ", style={"color": t["muted"]}),
-                  html.Span(str(minmax["max"]), style={"color": "#a8ff78", "fontWeight": "700"})],
-                 style=pill_style("#a8ff78")),
+    cards = [
+        stat_card("Total P&L",   f"{sym}£{total_pnl:.2f}", pnl_color),
+        stat_card("Trades",      str(len(df)), TEXT, f"{len(win_trades)}W  {len(loss_trades)}L"),
+        stat_card("Win rate",    f"{win_rate:.1f}%", UP if win_rate >= 50 else DOWN),
+        stat_card("Best trade",  f"+£{df['pnl'].max():.2f}", UP),
+        stat_card("Worst trade", f"£{df['pnl'].min():.2f}", DOWN),
     ]
 
-    return (str(count), count, log, log_items, clicks,
-            rate_text, history, minmax, spark, minmax_pills)
+    df_s = df.sort_values("close_time").reset_index(drop=True)
+    df_s["cum_pnl"] = df_s["pnl"].cumsum()
 
+    pnl_fig = go.Figure()
+    pnl_fig.add_trace(go.Scatter(
+        x=df_s["close_time"], y=df_s["cum_pnl"],
+        mode="lines+markers",
+        line={"color": GOLD, "width": 2, "shape": "spline"},
+        marker={"size": 5, "color": GOLD},
+        fill="tozeroy", fillcolor="rgba(240,180,41,0.07)",
+        hovertemplate="£%{y:.2f}<extra></extra>",
+    ))
+    pnl_fig.add_hline(y=0, line_color=BORDER, line_width=1)
+    ly = base_layout(); ly["yaxis"]["tickprefix"] = "£"
+    pnl_fig.update_layout(**ly)
 
-@callback(
-    Output("counter-display", "children", allow_duplicate=True),
-    Input("counter-store", "data"),
-    prevent_initial_call="initial_duplicate",
-)
-def init_display(count):
-    return str(count)
+    bar_colors = [UP if p >= 0 else DOWN for p in df_s["pnl"]]
+    bar_fig = go.Figure(go.Bar(
+        x=list(range(len(df_s))), y=df_s["pnl"],
+        marker={"color": bar_colors, "opacity": 0.85},
+        hovertemplate="Trade %{x}<br>£%{y:.2f}<extra></extra>",
+    ))
+    ly2 = base_layout(); ly2["yaxis"]["tickprefix"] = "£"
+    bar_fig.update_layout(**ly2)
 
+    buys  = len(df[df["direction"] == "BUY"])
+    sells = len(df[df["direction"] == "SELL"])
+    donut_fig = go.Figure(go.Pie(
+        values=[buys, sells], labels=["Buy", "Sell"],
+        hole=0.6, marker={"colors": [UP, DOWN]}, textinfo="percent",
+    ))
+    donut_fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font={"family": "monospace", "color": TEXT, "size": 11},
+        margin={"t": 10, "r": 10, "b": 10, "l": 10},
+        legend={"bgcolor": "rgba(0,0,0,0)", "font": {"color": MUTED}},
+        annotations=[{"text": f"{len(df)}<br>trades", "x": 0.5, "y": 0.5,
+                      "showarrow": False, "font": {"size": 14, "color": TEXT},
+                      "xref": "paper", "yref": "paper"}],
+    )
+
+    h  = {"fontSize": "9px", "letterSpacing": "1px", "textTransform": "uppercase",
+          "color": MUTED, "padding": "8px 12px",
+          "borderBottom": f"1px solid {BORDER}", "textAlign": "right"}
+    hl = {**h, "textAlign": "left"}
+    def cell(color=TEXT):
+        return {"fontSize": "11px", "color": color, "padding": "8px 12px",
+                "textAlign": "right", "borderBottom": f"1px solid {BORDER}"}
+
+    rows = [html.Tr([
+        html.Th("Time",      style=hl),
+        html.Th("Direction", style=h),
+        html.Th("Volume",    style=h),
+        html.Th("Open",      style=h),
+        html.Th("Close",     style=h),
+        html.Th("P&L",       style=h),
+    ])]
+    for _, row in df_s.sort_values("close_time", ascending=False).head(20).iterrows():
+        pc = UP if row["pnl"] >= 0 else DOWN
+        rows.append(html.Tr([
+            html.Td(row["close_time"].strftime("%d %b %H:%M"),
+                    style={**cell(), "textAlign": "left"}),
+            html.Td(row["direction"],
+                    style=cell(UP if row["direction"] == "BUY" else DOWN)),
+            html.Td(f'{row["volume"]:.2f}',     style=cell()),
+            html.Td(f'{row["open_price"]:.2f}', style=cell()),
+            html.Td(f'{row["close_price"]:.2f}',style=cell()),
+            html.Td(f'{"+" if row["pnl"]>=0 else ""}£{row["pnl"]:.2f}', style=cell(pc)),
+        ]))
+
+    table   = html.Table(rows, style={"width": "100%", "borderCollapse": "collapse"})
+    updated = f"Updated {datetime.now().strftime('%H:%M:%S')}  ·  {len(df)} trades"
+    return cards, pnl_fig, bar_fig, donut_fig, table, updated
 
 if __name__ == "__main__":
-    print(f"\n  POC App v{APP_VERSION}")
+    print(f"\n  {SYMBOL} Trades Dashboard v{APP_VERSION}")
     print("  http://127.0.0.1:8050\n")
     app.run(debug=True)

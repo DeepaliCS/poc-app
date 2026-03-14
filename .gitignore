@@ -1,8 +1,15 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
 .env
-.DS_Store
 *.egg-info/
 dist/
 build/
+
+# Secrets — never commit these
+.env
+config_local.py
+
+# Data files
+data/*.csv
