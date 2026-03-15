@@ -714,6 +714,25 @@ def update_market(selected_date, tf_label):
     return html.Div(charts), summary
 
 
+def digits_from_raw(raw_value, symbol_id):
+    """Find correct price divisor by matching raw bar value to known fill_price."""
+    import math
+    df = load_trades()
+    if df is not None:
+        sym_trades = df[df["symbol_id"] == symbol_id]
+        if not sym_trades.empty and raw_value > 0:
+            target = sym_trades["fill_price"].median()
+            if target > 0:
+                d = round(math.log10(raw_value / target))
+                d = max(0, min(d, 10))
+                print(f"  → digits={d}, price≈{raw_value/(10**d):.2f} (target={target:.2f})")
+                return d
+    # Fallback: find divisor landing in 10–500,000
+    for d in range(10):
+        if 10 < raw_value / (10**d) < 500_000:
+            return d
+    return 5
+
 def fetch_candles_sync(symbol_id, from_dt, to_dt, period, minutes):
     """Fetch OHLCV candles from cTrader using a persistent reactor thread."""
     import warnings, threading
@@ -784,9 +803,7 @@ def fetch_candles_sync(symbol_id, from_dt, to_dt, period, minutes):
             c.send(req)
 
         elif ptype == ProtoOASymbolByIdRes().payloadType:
-            res = extract(message, ProtoOASymbolByIdRes)
-            if res.symbol:
-                state["digits"] = res.symbol[0].digits
+            # Skip symbol details — we compute digits from raw candle value
             req = ProtoOAGetTrendbarsReq()
             req.ctidTraderAccountId = ACCOUNT_ID
             req.symbolId            = symbol_id
@@ -796,8 +813,14 @@ def fetch_candles_sync(symbol_id, from_dt, to_dt, period, minutes):
             c.send(req)
 
         elif ptype == ProtoOAGetTrendbarsRes().payloadType:
-            res     = extract(message, ProtoOAGetTrendbarsRes)
-            divisor = 10 ** state["digits"]
+            res = extract(message, ProtoOAGetTrendbarsRes)
+            if not res.trendbar:
+                finish(pd.DataFrame())
+                return
+            # Compute digits from first bar vs known fill_price
+            raw_low = res.trendbar[0].low
+            d       = digits_from_raw(raw_low, symbol_id)
+            divisor = 10 ** d
             rows    = []
             for bar in res.trendbar:
                 low   = bar.low / divisor
@@ -808,7 +831,8 @@ def fetch_candles_sync(symbol_id, from_dt, to_dt, period, minutes):
                             bar.utcTimestampInMinutes * 60, tz=timezone.utc)
                 rows.append({"time": ts, "open": open_,
                              "high": high, "low": low, "close": close})
-            df = pd.DataFrame(rows).sort_values("time") if rows else pd.DataFrame()
+            df = pd.DataFrame(rows).sort_values("time")
+            print(f"  → {len(rows)} candles, range: {df['low'].min():.2f}–{df['high'].max():.2f}")
             finish(df)
 
         elif ptype == ProtoOAErrorRes().payloadType:
