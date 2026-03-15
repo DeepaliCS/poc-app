@@ -16,24 +16,22 @@ done
 
 source "$CONDA_SH"
 conda activate "$ENV_NAME"
-
-# Install/update packages
 pip install -r requirements.txt -q
 
-# Check .env exists
 if [ ! -f ".env" ]; then
-    echo ""
-    echo "  ✗ No .env file found!"
-    echo "    cp .env.example .env"
-    echo "    Then fill in your cTrader credentials."
-    echo ""
-    read -p "  Press Enter to close..."
+    echo "  ✗ No .env file. Copy .env.example → .env and fill in credentials."
     exit 1
 fi
 
 echo ""
 echo "  → Fetching latest trades from cTrader..."
 python fetch_data.py
+
+# Fetch symbol names if not already cached
+if [ ! -f "data/symbols.json" ]; then
+    echo "  → Fetching symbol names (one-time)..."
+    python fetch_symbols.py
+fi
 
 echo ""
 echo "  ▶  Dashboard → http://127.0.0.1:8050"

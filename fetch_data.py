@@ -17,7 +17,7 @@ HOST          = os.getenv("CTRADER_HOST", "live.ctraderapi.com")
 PORT          = int(os.getenv("CTRADER_PORT", "5035"))
 
 # ── How far back to fetch ─────────────────────────────────────
-FETCH_DAYS = 90
+FETCH_DAYS = 120
 
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
