@@ -124,8 +124,9 @@ def header(active_page="overview"):
                       style={"fontSize": "10px", "color": MUTED, "letterSpacing": "3px"}),
         ]),
         html.Div(style={"display": "flex", "gap": "8px"}, children=[
-            nav_btn("📊  Overview",   "nav-overview", active=(active_page=="overview")),
-            nav_btn("📅  Daily View", "nav-daily",    active=(active_page=="daily")),
+            nav_btn("📊  Overview",    "nav-overview", active=(active_page=="overview")),
+            nav_btn("📅  Daily View",  "nav-daily",    active=(active_page=="daily")),
+            nav_btn("🕯  Market View", "nav-market",   active=(active_page=="market")),
         ]),
     ])
 
@@ -212,6 +213,57 @@ page_daily = html.Div(id="page-daily", children=[
     html.Div(id="daily-charts"),
 ])
 
+# ── Page 3: Market View ───────────────────────────────────────
+CANDLE_TFS = [
+    {"label": "5m",  "minutes": 5,   "period": 5},
+    {"label": "15m", "minutes": 15,  "period": 6},
+    {"label": "1h",  "minutes": 60,  "period": 8},
+]
+
+page_market = html.Div(id="page-market", children=[
+    header("market"),
+
+    # Controls row
+    html.Div(style={"display": "flex", "alignItems": "center", "gap": "16px",
+                    "marginBottom": "24px", "background": PANEL,
+                    "border": f"1px solid {BORDER}",
+                    "borderRadius": "10px", "padding": "16px 20px"},
+    children=[
+        html.Div("Date:", style={"fontSize": "10px", "color": MUTED,
+                                  "letterSpacing": "2px", "textTransform": "uppercase"}),
+        dcc.DatePickerSingle(
+            id="market-date-picker",
+            date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            display_format="DD MMM YYYY",
+        ),
+        html.Div("Timeframe:", style={"fontSize": "10px", "color": MUTED,
+                                       "letterSpacing": "2px", "textTransform": "uppercase",
+                                       "marginLeft": "16px"}),
+        html.Div(style={"display": "flex", "gap": "6px"}, children=[
+            html.Button(tf["label"], id=f"ctf-{tf['label']}", n_clicks=0,
+                        style={"fontSize": "11px", "padding": "5px 12px",
+                               "background": GOLD if tf["label"] == "5m" else CARD,
+                               "color": BG if tf["label"] == "5m" else MUTED,
+                               "border": f"1px solid {GOLD if tf['label'] == '5m' else BORDER}",
+                               "borderRadius": "6px", "cursor": "pointer",
+                               "fontWeight": "700" if tf["label"] == "5m" else "400"})
+            for tf in CANDLE_TFS
+        ]),
+        html.Div(id="market-day-summary",
+                 style={"fontSize": "11px", "color": MUTED, "marginLeft": "auto"}),
+    ]),
+
+    # Loading indicator + charts
+    dcc.Loading(
+        id="market-loading",
+        type="circle",
+        color=GOLD,
+        children=html.Div(id="market-charts"),
+    ),
+
+    dcc.Store(id="ctf-store", data="5m"),
+])
+
 # ── App layout ────────────────────────────────────────────────
 app.layout = html.Div(
     style={"background": BG, "minHeight": "100vh", "padding": "28px",
@@ -227,17 +279,23 @@ app.layout = html.Div(
     Output("page-store",   "data"),
     Input("nav-overview",  "n_clicks"),
     Input("nav-daily",     "n_clicks"),
+    Input("nav-market",    "n_clicks"),
     prevent_initial_call=True,
 )
 def switch_page(*_):
-    return "daily" if ctx.triggered_id == "nav-daily" else "overview"
+    triggered = ctx.triggered_id
+    if triggered == "nav-daily":   return "daily"
+    if triggered == "nav-market":  return "market"
+    return "overview"
 
 @callback(
     Output("page-content", "children"),
     Input("page-store",    "data"),
 )
 def render_page(page):
-    return page_daily if page == "daily" else page_overview
+    if page == "daily":  return page_daily
+    if page == "market": return page_market
+    return page_overview
 
 # ── Overview: timeframe store ─────────────────────────────────
 @callback(
@@ -484,6 +542,296 @@ def update_daily(selected_date):
                   "marginBottom": "16px"}))
 
     return html.Div(charts), summary
+
+
+# ── Market view: timeframe store ─────────────────────────────
+@callback(
+    Output("ctf-store", "data"),
+    *[Input(f"ctf-{tf['label']}", "n_clicks") for tf in CANDLE_TFS],
+    prevent_initial_call=True,
+)
+def set_ctf(*_):
+    return ctx.triggered_id.replace("ctf-", "") if ctx.triggered_id else "5m"
+
+@callback(
+    *[Output(f"ctf-{tf['label']}", "style") for tf in CANDLE_TFS],
+    Input("ctf-store", "data"),
+)
+def update_ctf_styles(active):
+    return [{
+        "fontSize": "11px", "padding": "5px 12px",
+        "background": GOLD if tf["label"] == active else CARD,
+        "color": BG if tf["label"] == active else MUTED,
+        "border": f"1px solid {GOLD if tf['label'] == active else BORDER}",
+        "borderRadius": "6px", "cursor": "pointer",
+        "fontWeight": "700" if tf["label"] == active else "400",
+    } for tf in CANDLE_TFS]
+
+# ── Market view: main chart callback ─────────────────────────
+@callback(
+    Output("market-charts",      "children"),
+    Output("market-day-summary", "children"),
+    Input("market-date-picker",  "date"),
+    Input("ctf-store",           "data"),
+)
+def update_market(selected_date, tf_label):
+    if not selected_date:
+        return html.Div("Pick a date.", style={"color": MUTED}), ""
+
+    df_all  = load_trades()
+    symbols = load_symbols()
+    if df_all is None:
+        return html.Div("No trade data.", style={"color": MUTED}), ""
+
+    sel_dt  = pd.to_datetime(selected_date).tz_localize("UTC")
+    sel_end = sel_dt + timedelta(days=1)
+    df_day  = df_all[(df_all["time"] >= sel_dt) & (df_all["time"] < sel_end)].copy()
+
+    if df_day.empty:
+        return html.Div([
+            html.Div("📭  No trades on this day.",
+                     style={"color": MUTED, "fontSize": "14px",
+                            "padding": "40px", "textAlign": "center"}),
+        ]), "No trades this day"
+
+    tf_info   = next((t for t in CANDLE_TFS if t["label"] == tf_label), CANDLE_TFS[0])
+    period    = tf_info["period"]
+    minutes   = tf_info["minutes"]
+
+    # Fetch candles from cTrader for each symbol traded that day
+    charts = []
+    total_pnl = df_day["pnl"].sum()
+    sym_ids   = df_day["symbol_id"].unique()
+
+    summary = (f"{len(df_day)} trades  ·  "
+               f'{"+" if total_pnl>=0 else ""}£{total_pnl:.2f}  ·  '
+               f"{len(sym_ids)} symbol(s)  ·  {tf_label} candles")
+
+    for sym_id in sym_ids:
+        df_sym   = df_day[df_day["symbol_id"] == sym_id].copy()
+        sym_name = get_symbol_name(sym_id, symbols)
+        sym_pnl  = df_sym["pnl"].sum()
+
+        # Fetch OHLCV from cTrader
+        candles = fetch_candles_sync(sym_id, sel_dt, sel_end, period, minutes)
+
+        if candles is None or candles.empty:
+            charts.append(html.Div([
+                html.Div(style={"display": "flex", "justifyContent": "space-between",
+                                "marginBottom": "12px"},
+                children=[
+                    html.Span(sym_name, style={"fontSize": "16px", "fontWeight": "800",
+                                               "color": GOLD}),
+                    html.Span(f'{"+" if sym_pnl>=0 else ""}£{sym_pnl:.2f}',
+                              style={"fontSize": "16px", "fontWeight": "800",
+                                     "color": UP if sym_pnl>=0 else DOWN}),
+                ]),
+                html.Div(f"Could not fetch {tf_label} candles for {sym_name}.",
+                         style={"color": MUTED, "fontSize": "12px", "padding": "20px 0"}),
+            ], style={"background": PANEL, "border": f"1px solid {BORDER}",
+                      "borderRadius": "10px", "padding": "20px", "marginBottom": "16px"}))
+            continue
+
+        fig = go.Figure()
+
+        # Candlestick
+        fig.add_trace(go.Candlestick(
+            x=candles["time"],
+            open=candles["open"], high=candles["high"],
+            low=candles["low"],   close=candles["close"],
+            name=sym_name,
+            increasing_line_color=UP,   increasing_fillcolor=UP,
+            decreasing_line_color=DOWN, decreasing_fillcolor=DOWN,
+            line={"width": 1},
+        ))
+
+        # Trade entry markers
+        for _, trade in df_sym.iterrows():
+            is_buy = trade["direction"] == "BUY"
+            color  = UP if is_buy else DOWN
+            symbol = "triangle-up" if is_buy else "triangle-down"
+            label  = f'{"+" if trade["pnl"]>=0 else ""}£{trade["pnl"]:.2f}'
+
+            fig.add_trace(go.Scatter(
+                x=[trade["time"]],
+                y=[trade["fill_price"]],
+                mode="markers+text",
+                marker={"symbol": symbol, "size": 14, "color": color,
+                        "line": {"color": BG, "width": 1}},
+                text=[label],
+                textposition="top center" if is_buy else "bottom center",
+                textfont={"size": 9, "color": color},
+                name=trade["direction"],
+                showlegend=False,
+                hovertemplate=(
+                    f"{trade['direction']}<br>"
+                    f"Price: {trade['fill_price']:.2f}<br>"
+                    f"P&L: {label}<br>"
+                    f"Vol: {trade['volume']:.2f}<extra></extra>"
+                ),
+            ))
+
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=PANEL,
+            font={"family": "monospace", "color": TEXT, "size": 11},
+            margin={"t": 10, "r": 40, "b": 40, "l": 10},
+            height=320,
+            xaxis={
+                "gridcolor": BORDER, "zerolinecolor": BORDER,
+                "tickfont": {"color": MUTED},
+                "rangeslider": {"visible": False},
+                "type": "date",
+            },
+            yaxis={
+                "gridcolor": BORDER, "zerolinecolor": BORDER,
+                "tickfont": {"color": MUTED}, "side": "right",
+            },
+            legend={"bgcolor": "rgba(0,0,0,0)", "font": {"color": MUTED}},
+            hovermode="x unified",
+            hoverlabel={"bgcolor": CARD, "font": {"color": TEXT, "family": "monospace"}},
+        )
+
+        charts.append(html.Div([
+            html.Div(style={"display": "flex", "justifyContent": "space-between",
+                            "alignItems": "center", "marginBottom": "12px"},
+            children=[
+                html.Div([
+                    html.Span(sym_name, style={"fontSize": "16px", "fontWeight": "800",
+                                               "color": GOLD}),
+                    html.Span(f"  {tf_label} candles  ·  {len(df_sym)} trades",
+                              style={"fontSize": "10px", "color": MUTED, "marginLeft": "8px"}),
+                ]),
+                html.Div(f'{"+" if sym_pnl>=0 else ""}£{sym_pnl:.2f}',
+                         style={"fontSize": "18px", "fontWeight": "800",
+                                "color": UP if sym_pnl>=0 else DOWN}),
+            ]),
+            dcc.Graph(figure=fig, config={"displayModeBar": True,
+                                           "modeBarButtonsToRemove": ["lasso2d","select2d"],
+                                           "displaylogo": False}),
+        ], style={"background": PANEL, "border": f"1px solid {BORDER}",
+                  "borderRadius": "10px", "padding": "20px", "marginBottom": "16px"}))
+
+    return html.Div(charts), summary
+
+
+def fetch_candles_sync(symbol_id, from_dt, to_dt, period, minutes):
+    """Fetch OHLCV candles from cTrader using a persistent reactor thread."""
+    import warnings, threading
+    warnings.filterwarnings("ignore")
+
+    try:
+        from ctrader_open_api import Client, Protobuf, TcpProtocol
+        from ctrader_open_api.messages.OpenApiMessages_pb2 import (
+            ProtoOAApplicationAuthReq, ProtoOAApplicationAuthRes,
+            ProtoOAAccountAuthReq,     ProtoOAAccountAuthRes,
+            ProtoOAGetTrendbarsReq,    ProtoOAGetTrendbarsRes,
+            ProtoOASymbolByIdReq,      ProtoOASymbolByIdRes,
+            ProtoOAErrorRes,
+        )
+        from twisted.internet import reactor
+    except ImportError as e:
+        print(f"  ✗ Import error: {e}")
+        return None
+
+    CLIENT_ID     = os.getenv("CTRADER_CLIENT_ID")
+    CLIENT_SECRET = os.getenv("CTRADER_CLIENT_SECRET")
+    ACCESS_TOKEN  = os.getenv("CTRADER_ACCESS_TOKEN")
+    ACCOUNT_ID    = int(os.getenv("CTRADER_ACCOUNT_ID", "0"))
+    HOST          = os.getenv("CTRADER_HOST", "live.ctraderapi.com")
+    PORT          = int(os.getenv("CTRADER_PORT", "5035"))
+
+    pad     = timedelta(hours=2)
+    from_ms = int((from_dt - pad).timestamp() * 1000)
+    to_ms   = int((to_dt   + pad).timestamp() * 1000)
+
+    done_event = threading.Event()
+    state      = {"candles": None, "digits": 5}
+    client     = Client(HOST, PORT, TcpProtocol)
+
+    def extract(message, cls):
+        try:    return Protobuf.extract(message, cls)
+        except TypeError:
+            obj = cls(); obj.ParseFromString(message.payload); return obj
+
+    def finish(candles=None):
+        state["candles"] = candles
+        done_event.set()
+        # Do NOT stop the reactor — just disconnect this client
+        try: client.stopService()
+        except: pass
+
+    def on_connected(c):
+        req = ProtoOAApplicationAuthReq()
+        req.clientId = CLIENT_ID; req.clientSecret = CLIENT_SECRET
+        c.send(req)
+
+    def on_disconnected(c, reason):
+        done_event.set()
+
+    def on_message(c, message):
+        ptype = message.payloadType
+
+        if ptype == ProtoOAApplicationAuthRes().payloadType:
+            req = ProtoOAAccountAuthReq()
+            req.ctidTraderAccountId = ACCOUNT_ID
+            req.accessToken         = ACCESS_TOKEN
+            c.send(req)
+
+        elif ptype == ProtoOAAccountAuthRes().payloadType:
+            req = ProtoOASymbolByIdReq()
+            req.ctidTraderAccountId = ACCOUNT_ID
+            req.symbolId.append(symbol_id)
+            c.send(req)
+
+        elif ptype == ProtoOASymbolByIdRes().payloadType:
+            res = extract(message, ProtoOASymbolByIdRes)
+            if res.symbol:
+                state["digits"] = res.symbol[0].digits
+            req = ProtoOAGetTrendbarsReq()
+            req.ctidTraderAccountId = ACCOUNT_ID
+            req.symbolId            = symbol_id
+            req.period              = period
+            req.fromTimestamp       = from_ms
+            req.toTimestamp         = to_ms
+            c.send(req)
+
+        elif ptype == ProtoOAGetTrendbarsRes().payloadType:
+            res     = extract(message, ProtoOAGetTrendbarsRes)
+            divisor = 10 ** state["digits"]
+            rows    = []
+            for bar in res.trendbar:
+                low   = bar.low / divisor
+                open_ = low + (bar.deltaOpen  / divisor)
+                high  = low + (bar.deltaHigh  / divisor)
+                close = low + (bar.deltaClose / divisor)
+                ts    = datetime.fromtimestamp(
+                            bar.utcTimestampInMinutes * 60, tz=timezone.utc)
+                rows.append({"time": ts, "open": open_,
+                             "high": high, "low": low, "close": close})
+            df = pd.DataFrame(rows).sort_values("time") if rows else pd.DataFrame()
+            finish(df)
+
+        elif ptype == ProtoOAErrorRes().payloadType:
+            err = extract(message, ProtoOAErrorRes)
+            print(f"  ✗ cTrader error: {err.errorCode}: {err.description}")
+            finish(pd.DataFrame())
+
+    client.setConnectedCallback(on_connected)
+    client.setDisconnectedCallback(on_disconnected)
+    client.setMessageReceivedCallback(on_message)
+
+    # Start reactor in background thread only if not already running
+    if not reactor.running:
+        def run_reactor():
+            reactor.run(installSignalHandlers=False)
+        t = threading.Thread(target=run_reactor, daemon=True)
+        t.start()
+
+    # Schedule client connection on the reactor thread
+    reactor.callFromThread(client.startService)
+
+    done_event.wait(timeout=30)
+    return state["candles"]
 
 
 if __name__ == "__main__":
