@@ -607,10 +607,27 @@ def update_market(selected_date, tf_label):
                f'{"+" if total_pnl>=0 else ""}£{total_pnl:.2f}  ·  '
                f"{len(sym_ids)} symbol(s)  ·  {tf_label} candles")
 
+    # Load ALL deals for the day (opening + closing) to show entries and exits
+    df_all_raw = pd.read_csv(DATA_FILE)
+    df_all_raw["time"] = pd.to_datetime(df_all_raw["time"], format="ISO8601", utc=True)
+    df_day_all = df_all_raw[
+        (df_all_raw["time"] >= sel_dt) & (df_all_raw["time"] < sel_end)
+    ].copy()
+
     for sym_id in sym_ids:
-        df_sym   = df_day[df_day["symbol_id"] == sym_id].copy()
-        sym_name = get_symbol_name(sym_id, symbols)
-        sym_pnl  = df_sym["pnl"].sum()
+        df_sym_all  = df_day_all[df_day_all["symbol_id"] == sym_id].copy()
+        df_sym_open = df_sym_all[df_sym_all["is_closing"] == False]
+        df_sym_cls  = df_sym_all[df_sym_all["is_closing"] == True]
+        sym_name    = get_symbol_name(sym_id, symbols)
+        sym_pnl     = df_sym_cls["pnl"].sum()
+
+        # Build matched trades: open → close via position_id
+        positions = []
+        for _, close in df_sym_cls.iterrows():
+            pos_id = close["position_id"]
+            opens  = df_sym_open[df_sym_open["position_id"] == pos_id]
+            entry  = opens.iloc[0] if not opens.empty else None
+            positions.append({"entry": entry, "exit": close})
 
         # Fetch OHLCV from cTrader
         candles = fetch_candles_sync(sym_id, sel_dt, sel_end, period, minutes)
@@ -634,7 +651,7 @@ def update_market(selected_date, tf_label):
 
         fig = go.Figure()
 
-        # Candlestick
+        # ── Candlestick ───────────────────────────────────────
         fig.add_trace(go.Candlestick(
             x=candles["time"],
             open=candles["open"], high=candles["high"],
@@ -645,37 +662,92 @@ def update_market(selected_date, tf_label):
             line={"width": 1},
         ))
 
-        # Trade entry markers
-        for _, trade in df_sym.iterrows():
-            is_buy = trade["direction"] == "BUY"
-            color  = UP if is_buy else DOWN
-            symbol = "triangle-up" if is_buy else "triangle-down"
-            label  = f'{"+" if trade["pnl"]>=0 else ""}£{trade["pnl"]:.2f}'
+        # ── Trade overlays ────────────────────────────────────
+        # Colours: entry=bright, exit=muted, line=faint
+        ENTRY_BUY   = "#00e5ff"   # cyan  — buy entry
+        ENTRY_SELL  = "#ff9800"   # amber — sell entry
+        EXIT_COLOR  = "#ffffff"   # white — all exits
+        WIN_LINE    = "rgba(38,166,154,0.4)"   # green tint
+        LOSS_LINE   = "rgba(239,83,80,0.4)"    # red tint
 
+        legend_added = set()
+
+        for pos in positions:
+            entry = pos["entry"]
+            exit_ = pos["exit"]
+            pnl   = exit_["pnl"]
+            is_win = pnl >= 0
+
+            # Entry arrow (if we have the opening deal)
+            if entry is not None:
+                is_buy    = entry["direction"] == "BUY"
+                ent_color = ENTRY_BUY if is_buy else ENTRY_SELL
+                ent_sym   = "triangle-up" if is_buy else "triangle-down"
+                ent_label = "▲ BUY" if is_buy else "▼ SELL"
+                leg_key   = ent_label
+                fig.add_trace(go.Scatter(
+                    x=[entry["time"]],
+                    y=[entry["fill_price"]],
+                    mode="markers+text",
+                    marker={"symbol": ent_sym, "size": 14, "color": ent_color,
+                            "line": {"color": BG, "width": 1.5}},
+                    text=[" ENTRY"],
+                    textposition="top right" if is_buy else "bottom right",
+                    textfont={"size": 8, "color": ent_color},
+                    name=ent_label,
+                    legendgroup=ent_label,
+                    showlegend=(leg_key not in legend_added),
+                    hovertemplate=(
+                        f"<b>ENTRY {entry['direction']}</b><br>"
+                        f"Price: {entry['fill_price']:.2f}<br>"
+                        f"Volume: {entry['volume']:.2f}<br>"
+                        f"Time: %{{x|%H:%M}}<extra></extra>"
+                    ),
+                ))
+                legend_added.add(leg_key)
+
+                # Connecting line: entry → exit
+                line_color = WIN_LINE if is_win else LOSS_LINE
+                fig.add_trace(go.Scatter(
+                    x=[entry["time"], exit_["time"]],
+                    y=[entry["fill_price"], exit_["fill_price"]],
+                    mode="lines",
+                    line={"color": line_color, "width": 1.5, "dash": "dot"},
+                    showlegend=False,
+                    hoverinfo="skip",
+                ))
+
+            # Exit arrow
+            pnl_str  = f'{"+" if pnl>=0 else ""}£{pnl:.2f}'
+            ex_dir   = exit_["direction"]
+            ex_sym   = "triangle-up" if ex_dir == "BUY" else "triangle-down"
+            ex_label = "✕ EXIT"
             fig.add_trace(go.Scatter(
-                x=[trade["time"]],
-                y=[trade["fill_price"]],
+                x=[exit_["time"]],
+                y=[exit_["fill_price"]],
                 mode="markers+text",
-                marker={"symbol": symbol, "size": 14, "color": color,
+                marker={"symbol": "x", "size": 10, "color": UP if is_win else DOWN,
                         "line": {"color": BG, "width": 1}},
-                text=[label],
-                textposition="top center" if is_buy else "bottom center",
-                textfont={"size": 9, "color": color},
-                name=trade["direction"],
-                showlegend=False,
+                text=[f" {pnl_str}"],
+                textposition="top right" if ex_dir == "SELL" else "bottom right",
+                textfont={"size": 8, "color": UP if is_win else DOWN},
+                name=ex_label,
+                legendgroup=ex_label,
+                showlegend=(ex_label not in legend_added),
                 hovertemplate=(
-                    f"{trade['direction']}<br>"
-                    f"Price: {trade['fill_price']:.2f}<br>"
-                    f"P&L: {label}<br>"
-                    f"Vol: {trade['volume']:.2f}<extra></extra>"
+                    f"<b>EXIT {ex_dir}</b><br>"
+                    f"Price: {exit_['fill_price']:.2f}<br>"
+                    f"P&L: {pnl_str}<br>"
+                    f"Time: %{{x|%H:%M}}<extra></extra>"
                 ),
             ))
+            legend_added.add(ex_label)
 
         fig.update_layout(
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=PANEL,
             font={"family": "monospace", "color": TEXT, "size": 11},
             margin={"t": 10, "r": 40, "b": 40, "l": 10},
-            height=320,
+            height=380,
             xaxis={
                 "gridcolor": BORDER, "zerolinecolor": BORDER,
                 "tickfont": {"color": MUTED},
@@ -686,11 +758,14 @@ def update_market(selected_date, tf_label):
                 "gridcolor": BORDER, "zerolinecolor": BORDER,
                 "tickfont": {"color": MUTED}, "side": "right",
             },
-            legend={"bgcolor": "rgba(0,0,0,0)", "font": {"color": MUTED}},
+            legend={"bgcolor": "rgba(0,0,0,0)", "font": {"color": MUTED, "size": 10},
+                    "orientation": "h", "x": 0, "y": 1.05},
             hovermode="x unified",
             hoverlabel={"bgcolor": CARD, "font": {"color": TEXT, "family": "monospace"}},
         )
 
+        n_open  = len(df_sym_open)
+        n_close = len(df_sym_cls)
         charts.append(html.Div([
             html.Div(style={"display": "flex", "justifyContent": "space-between",
                             "alignItems": "center", "marginBottom": "12px"},
@@ -698,7 +773,7 @@ def update_market(selected_date, tf_label):
                 html.Div([
                     html.Span(sym_name, style={"fontSize": "16px", "fontWeight": "800",
                                                "color": GOLD}),
-                    html.Span(f"  {tf_label} candles  ·  {len(df_sym)} trades",
+                    html.Span(f"  {tf_label}  ·  {n_open} entries  ·  {n_close} exits",
                               style={"fontSize": "10px", "color": MUTED, "marginLeft": "8px"}),
                 ]),
                 html.Div(f'{"+" if sym_pnl>=0 else ""}£{sym_pnl:.2f}',
