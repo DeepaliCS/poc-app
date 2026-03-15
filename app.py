@@ -1,7 +1,7 @@
-# app.py  v2.1.0 — columns matched to fetch_data.py output
+# app.py  v2.2.0 — timeframe selector added
 import os
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 import plotly.graph_objects as go
 from dash import Dash, html, dcc, callback, Input, Output
@@ -12,7 +12,7 @@ load_dotenv(BASE_DIR / ".env")
 
 SYMBOL      = os.getenv("CTRADER_SYMBOL", "XAUUSD")
 DATA_FILE   = BASE_DIR / "data" / "trades.csv"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 
 BG     = "#0a0a0a"
 PANEL  = "#111111"
@@ -24,14 +24,23 @@ GOLD   = "#f0b429"
 UP     = "#26a69a"
 DOWN   = "#ef5350"
 
+TIMEFRAMES = [
+    {"label": "1W",  "days": 7},
+    {"label": "2W",  "days": 14},
+    {"label": "3W",  "days": 21},
+    {"label": "1M",  "days": 30},
+    {"label": "2M",  "days": 60},
+    {"label": "3M",  "days": 90},
+    {"label": "All", "days": 9999},
+]
+
 app = Dash(__name__, title=f"{SYMBOL} Trades")
 
-# ── Load & filter to closing deals only ───────────────────────
 def load_trades():
     if not DATA_FILE.exists():
         return None
-    df = pd.read_csv(DATA_FILE, parse_dates=["time"])
-    # Only closing deals have real P&L
+    df = pd.read_csv(DATA_FILE)
+    df["time"] = pd.to_datetime(df["time"], format="ISO8601", utc=True)
     df = df[df["is_closing"] == True].copy()
     return df if not df.empty else None
 
@@ -41,9 +50,21 @@ def stat_card(label, value, color=TEXT, sub=None):
                                "textTransform": "uppercase",
                                "color": MUTED, "marginBottom": "6px"}),
         html.Div(value, style={"fontSize": "22px", "fontWeight": "800", "color": color}),
-        html.Div(sub,   style={"fontSize": "10px", "color": MUTED, "marginTop": "2px"}) if sub else None,
+        html.Div(sub, style={"fontSize": "10px", "color": MUTED, "marginTop": "2px"}) if sub else None,
     ], style={"background": CARD, "border": f"1px solid {BORDER}",
               "borderRadius": "10px", "padding": "16px 20px"})
+
+def tf_button(label, active=False):
+    return html.Button(label, id=f"tf-{label}",
+        n_clicks=0,
+        style={
+            "fontSize": "11px", "padding": "6px 14px",
+            "background": GOLD if active else CARD,
+            "color": BG if active else MUTED,
+            "border": f"1px solid {GOLD if active else BORDER}",
+            "borderRadius": "6px", "cursor": "pointer",
+            "fontWeight": "700" if active else "400",
+        })
 
 app.layout = html.Div(
     style={"background": BG, "minHeight": "100vh", "padding": "28px",
@@ -52,34 +73,45 @@ app.layout = html.Div(
 
         # Header
         html.Div(style={"display": "flex", "justifyContent": "space-between",
-                        "alignItems": "flex-end", "marginBottom": "28px",
+                        "alignItems": "flex-end", "marginBottom": "20px",
                         "paddingBottom": "20px", "borderBottom": f"1px solid {BORDER}"},
         children=[
             html.Div([
                 html.Span(SYMBOL, style={"fontSize": "24px", "fontWeight": "800",
                                          "color": GOLD, "letterSpacing": "2px"}),
-                html.Span("  TRADES · PAST 7 DAYS",
+                html.Span("  TRADE HISTORY",
                           style={"fontSize": "10px", "color": MUTED, "letterSpacing": "3px"}),
             ]),
             html.Div([
                 html.Div(id="last-updated",
-                         style={"fontSize": "10px", "color": MUTED, "textAlign": "right"}),
-                html.Button("⟳ Refresh", id="refresh-btn", n_clicks=0,
-                            style={"marginTop": "6px", "fontSize": "11px",
-                                   "padding": "6px 16px", "background": CARD,
-                                   "color": TEXT, "border": f"1px solid {BORDER}",
+                         style={"fontSize": "10px", "color": MUTED, "textAlign": "right",
+                                "marginBottom": "6px"}),
+                html.Button("⟳ Refresh Data", id="refresh-btn", n_clicks=0,
+                            style={"fontSize": "11px", "padding": "6px 16px",
+                                   "background": CARD, "color": TEXT,
+                                   "border": f"1px solid {BORDER}",
                                    "borderRadius": "6px", "cursor": "pointer"}),
             ]),
         ]),
 
-        # Stat cards row
+        # ── Timeframe selector ────────────────────────────────
+        html.Div(style={"display": "flex", "alignItems": "center",
+                        "gap": "8px", "marginBottom": "20px"},
+        children=[
+            html.Div("Period:", style={"fontSize": "10px", "color": MUTED,
+                                       "letterSpacing": "1px", "marginRight": "4px"}),
+            *[tf_button(tf["label"], active=(tf["label"] == "1W"))
+              for tf in TIMEFRAMES],
+        ]),
+
+        # Stat cards
         html.Div(id="stat-cards",
                  style={"display": "grid", "gridTemplateColumns": "repeat(5,1fr)",
                         "gap": "12px", "marginBottom": "20px"}),
 
         # Cumulative P&L
         html.Div([
-            html.Div("Cumulative P&L",
+            html.Div(id="pnl-title",
                      style={"fontSize": "9px", "letterSpacing": "2px",
                             "textTransform": "uppercase", "color": MUTED,
                             "marginBottom": "12px"}),
@@ -101,7 +133,6 @@ app.layout = html.Div(
                           style={"height": "220px"}),
             ], style={"background": PANEL, "border": f"1px solid {BORDER}",
                       "borderRadius": "10px", "padding": "20px"}),
-
             html.Div([
                 html.Div("Buy vs Sell",
                          style={"fontSize": "9px", "letterSpacing": "2px",
@@ -123,6 +154,7 @@ app.layout = html.Div(
         ], style={"background": PANEL, "border": f"1px solid {BORDER}",
                   "borderRadius": "10px", "padding": "20px"}),
 
+        dcc.Store(id="tf-store", data="1W"),
         dcc.Interval(id="interval", interval=60_000, n_intervals=0),
     ]
 )
@@ -141,8 +173,7 @@ def empty_fig(msg="No data"):
 
 def base_layout():
     return dict(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor=PANEL,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=PANEL,
         font={"family": "monospace", "color": TEXT, "size": 11},
         margin={"t": 10, "r": 10, "b": 40, "l": 10},
         xaxis={"gridcolor": BORDER, "zerolinecolor": BORDER,
@@ -155,6 +186,37 @@ def base_layout():
         hoverlabel={"bgcolor": CARD, "font": {"color": TEXT, "family": "monospace"}},
     )
 
+# ── Timeframe button → store ──────────────────────────────────
+@callback(
+    Output("tf-store", "data"),
+    *[Input(f"tf-{tf['label']}", "n_clicks") for tf in TIMEFRAMES],
+    prevent_initial_call=True,
+)
+def set_timeframe(*_):
+    from dash import ctx
+    triggered = ctx.triggered_id  # e.g. "tf-2W"
+    return triggered.replace("tf-", "") if triggered else "1W"
+
+# ── Update button styles ──────────────────────────────────────
+@callback(
+    *[Output(f"tf-{tf['label']}", "style") for tf in TIMEFRAMES],
+    Input("tf-store", "data"),
+)
+def update_btn_styles(active_tf):
+    styles = []
+    for tf in TIMEFRAMES:
+        active = (tf["label"] == active_tf)
+        styles.append({
+            "fontSize": "11px", "padding": "6px 14px",
+            "background": GOLD if active else CARD,
+            "color": BG if active else MUTED,
+            "border": f"1px solid {GOLD if active else BORDER}",
+            "borderRadius": "6px", "cursor": "pointer",
+            "fontWeight": "700" if active else "400",
+        })
+    return styles
+
+# ── Main data callback ────────────────────────────────────────
 @callback(
     Output("stat-cards",   "children"),
     Output("pnl-chart",    "figure"),
@@ -162,30 +224,55 @@ def base_layout():
     Output("donut-chart",  "figure"),
     Output("trade-table",  "children"),
     Output("last-updated", "children"),
+    Output("pnl-title",    "children"),
+    Input("tf-store",      "data"),
     Input("interval",      "n_intervals"),
     Input("refresh-btn",   "n_clicks"),
 )
-def update(_i, _r):
-    df = load_trades()
+def update(active_tf, _i, _r):
+    df_all = load_trades()
 
-    if df is None:
+    if df_all is None:
         empty = empty_fig("No trade data — run fetch_data.py first")
         cards = [stat_card("No data", "—") for _ in range(5)]
-        msg   = html.Div("No data loaded.",
-                         style={"color": MUTED, "fontSize": "12px", "padding": "20px 0"})
-        return cards, empty, empty, empty, msg, "No data"
+        msg   = html.Div("No data.", style={"color": MUTED, "fontSize": "12px"})
+        return cards, empty, empty, empty, msg, "No data", "Cumulative P&L"
+
+    # ── Filter by selected timeframe ──────────────────────────
+    days = next((t["days"] for t in TIMEFRAMES if t["label"] == active_tf), 7)
+    if days < 9999:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        df = df_all[df_all["time"] >= cutoff].copy()
+    else:
+        df = df_all.copy()
+
+    if df.empty:
+        empty = empty_fig(f"No trades in the last {active_tf}")
+        cards = [stat_card(f"No trades ({active_tf})", "—") for _ in range(5)]
+        msg   = html.Div(f"No trades found in this period.",
+                         style={"color": MUTED, "fontSize": "12px"})
+        updated = f"Updated {datetime.now().strftime('%H:%M:%S')}"
+        return cards, empty, empty, empty, msg, updated, f"Cumulative P&L · {active_tf}"
 
     # ── Stats ──────────────────────────────────────────────────
-    total_pnl   = df["pnl"].sum()
-    wins        = df[df["pnl"] > 0]
-    losses      = df[df["pnl"] < 0]
-    win_rate    = len(wins) / len(df) * 100 if len(df) else 0
-    pnl_color   = UP if total_pnl >= 0 else DOWN
+    total_pnl = df["pnl"].sum()
+    wins      = df[df["pnl"] > 0]
+    losses    = df[df["pnl"] < 0]
+    win_rate  = len(wins) / len(df) * 100 if len(df) else 0
+    pnl_color = UP if total_pnl >= 0 else DOWN
+
+    # Daily average
+    if days < 9999:
+        actual_days = max((df["time"].max() - df["time"].min()).days, 1)
+        daily_avg   = total_pnl / max(actual_days, 1)
+        sub_pnl     = f"£{daily_avg:+.2f}/day avg"
+    else:
+        sub_pnl = f"{len(df)} total trades"
 
     cards = [
         stat_card("Total P&L",
                   f'{"+" if total_pnl>=0 else ""}£{total_pnl:.2f}',
-                  pnl_color),
+                  pnl_color, sub_pnl),
         stat_card("Trades", str(len(df)), TEXT,
                   f"{len(wins)}W  {len(losses)}L"),
         stat_card("Win rate", f"{win_rate:.1f}%",
@@ -194,12 +281,13 @@ def update(_i, _r):
         stat_card("Worst", f'£{df["pnl"].min():.2f}',  DOWN),
     ]
 
-    # ── Sort by time ───────────────────────────────────────────
     df = df.sort_values("time").reset_index(drop=True)
     df["cum_pnl"] = df["pnl"].cumsum()
 
-    # ── Cumulative P&L line ────────────────────────────────────
+    # ── Cumulative P&L ────────────────────────────────────────
     pnl_fig = go.Figure()
+    # Zero reference line first (so it sits behind)
+    pnl_fig.add_hline(y=0, line_color=BORDER, line_width=1)
     pnl_fig.add_trace(go.Scatter(
         x=df["time"], y=df["cum_pnl"],
         mode="lines+markers",
@@ -210,10 +298,9 @@ def update(_i, _r):
         fillcolor="rgba(240,180,41,0.07)",
         hovertemplate="%{x|%d %b %H:%M}<br>£%{y:.2f}<extra></extra>",
     ))
-    pnl_fig.add_hline(y=0, line_color=BORDER, line_width=1)
     pnl_fig.update_layout(**base_layout())
 
-    # ── Per-trade bar ──────────────────────────────────────────
+    # ── Per-trade bars ────────────────────────────────────────
     bar_fig = go.Figure(go.Bar(
         x=df["time"], y=df["pnl"],
         marker={"color": [UP if p >= 0 else DOWN for p in df["pnl"]],
@@ -222,16 +309,15 @@ def update(_i, _r):
     ))
     bar_fig.update_layout(**base_layout())
 
-    # ── Buy / Sell donut ───────────────────────────────────────
+    # ── Donut ─────────────────────────────────────────────────
     buys  = len(df[df["direction"] == "BUY"])
     sells = len(df[df["direction"] == "SELL"])
     donut_fig = go.Figure(go.Pie(
         values=[buys, sells] if (buys + sells) > 0 else [1, 1],
-        labels=["Buy", "Sell"],
-        hole=0.62,
+        labels=["Buy", "Sell"], hole=0.62,
         marker={"colors": [UP, DOWN]},
         textinfo="percent+label",
-        hovertemplate="%{label}: %{value} trades<extra></extra>",
+        hovertemplate="%{label}: %{value}<extra></extra>",
     ))
     donut_fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -244,44 +330,42 @@ def update(_i, _r):
                       "xref": "paper", "yref": "paper"}],
     )
 
-    # ── Trade table ────────────────────────────────────────────
-    th = {"fontSize": "9px", "letterSpacing": "1px", "textTransform": "uppercase",
-          "color": MUTED, "padding": "8px 12px",
-          "borderBottom": f"1px solid {BORDER}", "textAlign": "right",
-          "background": CARD}
+    # ── Table ─────────────────────────────────────────────────
+    th  = {"fontSize": "9px", "letterSpacing": "1px", "textTransform": "uppercase",
+           "color": MUTED, "padding": "8px 12px",
+           "borderBottom": f"1px solid {BORDER}", "textAlign": "right",
+           "background": CARD}
     thl = {**th, "textAlign": "left"}
-
-    def td(color=TEXT):
-        return {"fontSize": "11px", "color": color, "padding": "8px 12px",
+    def td(c=TEXT):
+        return {"fontSize": "11px", "color": c, "padding": "8px 12px",
                 "textAlign": "right", "borderBottom": f"1px solid {BORDER}"}
     tdl = lambda c=TEXT: {**td(c), "textAlign": "left"}
 
     rows = [html.Tr([
-        html.Th("Time",      style=thl),
-        html.Th("Side",      style=th),
-        html.Th("Volume",    style=th),
-        html.Th("Fill price",style=th),
-        html.Th("P&L",       style=th),
+        html.Th("Time",       style=thl),
+        html.Th("Side",       style=th),
+        html.Th("Volume",     style=th),
+        html.Th("Fill price", style=th),
+        html.Th("P&L",        style=th),
     ])]
-
-    for _, row in df.sort_values("time", ascending=False).head(25).iterrows():
-        pc  = UP if row["pnl"] >= 0 else DOWN
+    for _, row in df.sort_values("time", ascending=False).head(30).iterrows():
+        pc    = UP if row["pnl"] >= 0 else DOWN
         dir_c = UP if row["direction"] == "BUY" else DOWN
-        pnl_str = f'{"+" if row["pnl"]>=0 else ""}£{row["pnl"]:.2f}'
         rows.append(html.Tr([
             html.Td(row["time"].strftime("%d %b  %H:%M"), style=tdl()),
             html.Td(row["direction"],                      style=td(dir_c)),
             html.Td(f'{row["volume"]:.2f}',                style=td()),
             html.Td(f'{row["fill_price"]:.2f}',            style=td()),
-            html.Td(pnl_str,                               style=td(pc)),
+            html.Td(f'{"+" if row["pnl"]>=0 else ""}£{row["pnl"]:.2f}', style=td(pc)),
         ]))
 
     table   = html.Table(rows, style={"width": "100%", "borderCollapse": "collapse"})
     updated = (f"Updated {datetime.now().strftime('%H:%M:%S')}  ·  "
-               f"{len(df)} closed trades  ·  "
-               f'Total P&L: {"+" if total_pnl>=0 else ""}£{total_pnl:.2f}')
+               f"{len(df)} trades  ·  "
+               f'{"+" if total_pnl>=0 else ""}£{total_pnl:.2f}')
+    title   = f"Cumulative P&L · {active_tf}"
 
-    return cards, pnl_fig, bar_fig, donut_fig, table, updated
+    return cards, pnl_fig, bar_fig, donut_fig, table, updated, title
 
 
 if __name__ == "__main__":

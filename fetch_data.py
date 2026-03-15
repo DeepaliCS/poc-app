@@ -1,5 +1,4 @@
-# fetch_data.py
-# ── Fetches deals (closed trades) from cTrader for past 7 days ─
+# fetch_data.py — fetches 90 days of deals from cTrader
 import os, sys, time, warnings
 warnings.filterwarnings("ignore")
 from datetime import datetime, timezone, timedelta
@@ -17,6 +16,9 @@ ACCOUNT_ID    = int(os.getenv("CTRADER_ACCOUNT_ID", "0"))
 HOST          = os.getenv("CTRADER_HOST", "live.ctraderapi.com")
 PORT          = int(os.getenv("CTRADER_PORT", "5035"))
 
+# ── How far back to fetch ─────────────────────────────────────
+FETCH_DAYS = 90
+
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 OUTPUT = DATA_DIR / "trades.csv"
@@ -28,15 +30,14 @@ def validate_config():
     if not ACCESS_TOKEN or "your_" in ACCESS_TOKEN:   missing.append("CTRADER_ACCESS_TOKEN")
     if ACCOUNT_ID == 0:                               missing.append("CTRADER_ACCOUNT_ID")
     if missing:
-        print(f"\n  ✗ Missing in .env: {', '.join(missing)}")
-        print(f"    Fill in your .env file and try again.\n")
+        print(f"\n  ✗ Missing in .env: {', '.join(missing)}\n")
         sys.exit(1)
 
 def fetch():
     validate_config()
 
     print("\n  ┌─────────────────────────────────────────┐")
-    print("  │  Fetching deals from cTrader …           │")
+    print(f"  │  Fetching {FETCH_DAYS} days of deals from cTrader  │")
     print("  └─────────────────────────────────────────┘\n")
 
     try:
@@ -49,13 +50,26 @@ def fetch():
         )
         from twisted.internet import reactor
     except ImportError as e:
-        print(f"  ✗ Import error: {e}")
-        sys.exit(1)
+        print(f"  ✗ Import error: {e}"); sys.exit(1)
 
-    now_ms  = int(time.time() * 1000)
-    week_ms = now_ms - (7 * 24 * 60 * 60 * 1000)
+    now_ms   = int(time.time() * 1000)
+    # cTrader API max window per request is 1 week — we loop in weekly chunks
+    all_rows = []
+    chunk_ms = 7 * 24 * 60 * 60 * 1000   # 1 week in ms
+    chunks   = []
+    cursor   = now_ms
+    for _ in range((FETCH_DAYS // 7) + 1):
+        chunk_end   = cursor
+        chunk_start = cursor - chunk_ms
+        chunks.append((chunk_start, chunk_end))
+        cursor = chunk_start
+        if (now_ms - chunk_start) >= FETCH_DAYS * 24 * 60 * 60 * 1000:
+            break
 
-    state = {"done": False, "error": None}
+    print(f"  → Fetching {len(chunks)} weekly chunks ({FETCH_DAYS} days total)…\n")
+
+    state = {"chunk_idx": 0, "done": False, "error": None}
+
     client = Client(HOST, PORT, TcpProtocol)
 
     APP_AUTH_RES     = ProtoOAApplicationAuthRes().payloadType
@@ -67,6 +81,44 @@ def fetch():
         try:    return Protobuf.extract(message, cls)
         except TypeError:
             obj = cls(); obj.ParseFromString(message.payload); return obj
+
+    def request_next_chunk(c):
+        idx = state["chunk_idx"]
+        if idx >= len(chunks):
+            finish()
+            return
+        start, end = chunks[idx]
+        req = ProtoOADealListReq()
+        req.ctidTraderAccountId = ACCOUNT_ID
+        req.fromTimestamp       = start
+        req.toTimestamp         = end
+        c.send(req)
+
+    def finish():
+        if all_rows:
+            df = pd.DataFrame(all_rows)
+            df = df.drop_duplicates(subset=["deal_id"])
+            df = df.sort_values("time").reset_index(drop=True)
+            df.to_csv(OUTPUT, index=False)
+            closing = df[df["is_closing"] == True]
+            print(f"\n  ✓ Total deals saved : {len(df)}")
+            print(f"  ✓ Closed positions  : {len(closing)}")
+            if not closing.empty:
+                pnl = closing["pnl"].sum()
+                print(f"  ✓ Total P&L         : £{pnl:.2f}")
+                # Breakdown by week
+                print(f"\n  Weekly P&L breakdown:")
+                closing["week"] = pd.to_datetime(closing["time"]).dt.to_period("W")
+                for week, grp in closing.groupby("week"):
+                    wpnl = grp["pnl"].sum()
+                    bar  = "█" * min(int(abs(wpnl) / 50), 20)
+                    sign = "+" if wpnl >= 0 else ""
+                    print(f"    {str(week):<20} {sign}£{wpnl:>8.2f}  {bar}")
+        else:
+            print("  ⚠  No deals found.")
+        state["done"] = True
+        try: reactor.stop()
+        except: pass
 
     def on_connected(c):
         print("  ✓ Connected to cTrader")
@@ -91,58 +143,42 @@ def fetch():
             c.send(req)
 
         elif ptype == ACCOUNT_AUTH_RES:
-            print("  ✓ Account authenticated")
-            print(f"  → Requesting deals for past 7 days…")
-            req = ProtoOADealListReq()
-            req.ctidTraderAccountId = ACCOUNT_ID
-            req.fromTimestamp       = week_ms
-            req.toTimestamp         = now_ms
-            c.send(req)
+            print("  ✓ Account authenticated\n")
+            request_next_chunk(c)
 
         elif ptype == DEAL_LIST_RES:
             res   = extract(message, ProtoOADealListRes)
             deals = res.deal
-            print(f"  ✓ Received {len(deals)} deals")
+            idx   = state["chunk_idx"]
+            start, end = chunks[idx]
+            start_dt = datetime.fromtimestamp(start/1000, tz=timezone.utc).strftime("%d %b")
+            end_dt   = datetime.fromtimestamp(end/1000,   tz=timezone.utc).strftime("%d %b")
+            print(f"  ✓ Chunk {idx+1}/{len(chunks)}  ({start_dt} → {end_dt})  {len(deals)} deals")
 
-            rows = []
             for d in deals:
-                # Only include filled/closed deals (dealStatus 2 = FILLED)
                 if d.dealStatus != 2:
                     continue
-                rows.append({
-                    "deal_id":      d.dealId,
-                    "position_id":  d.positionId,
-                    "symbol_id":    d.symbolId,
-                    "direction":    "BUY" if d.tradeSide == 1 else "SELL",
-                    "volume":       d.volume / 100,
-                    "fill_price":   d.executionPrice,
-                    "close_price":  d.closePositionDetail.entryPrice if d.HasField("closePositionDetail") else 0,
-                    "time":         datetime.fromtimestamp(d.executionTimestamp / 1000, tz=timezone.utc),
-                    "pnl":          d.closePositionDetail.grossProfit / 100 if d.HasField("closePositionDetail") else 0,
-                    "commission":   d.commission / 100,
-                    "is_closing":   d.HasField("closePositionDetail"),
+                all_rows.append({
+                    "deal_id":     d.dealId,
+                    "position_id": d.positionId,
+                    "symbol_id":   d.symbolId,
+                    "direction":   "BUY" if d.tradeSide == 1 else "SELL",
+                    "volume":      d.volume / 100,
+                    "fill_price":  d.executionPrice,
+                    "close_price": d.closePositionDetail.entryPrice
+                                   if d.HasField("closePositionDetail") else 0,
+                    "time":        datetime.fromtimestamp(
+                                       d.executionTimestamp / 1000, tz=timezone.utc),
+                    "pnl":         d.closePositionDetail.grossProfit / 100
+                                   if d.HasField("closePositionDetail") else 0,
+                    "commission":  d.commission / 100,
+                    "is_closing":  d.HasField("closePositionDetail"),
                 })
 
-            df = pd.DataFrame(rows)
-
-            if df.empty:
-                print("  ⚠  No filled deals found in the past 7 days.")
-                print("     This could mean:")
-                print("     - No trades were made this week")
-                print("     - Try extending the date range in fetch_data.py")
-            else:
-                df.to_csv(OUTPUT, index=False)
-                print(f"  ✓ Saved {len(df)} deals → {OUTPUT}")
-                # Print a quick summary
-                closing = df[df["is_closing"]]
-                if not closing.empty:
-                    total_pnl = closing["pnl"].sum()
-                    print(f"  ✓ Closed positions: {len(closing)}")
-                    print(f"  ✓ Total P&L: £{total_pnl:.2f}")
-
-            state["done"] = True
-            try: reactor.stop()
-            except: pass
+            state["chunk_idx"] += 1
+            # Small delay between requests to avoid rate limiting
+            from twisted.internet import reactor as r
+            r.callLater(0.3, request_next_chunk, c)
 
         elif ptype == ERROR_RES:
             err = extract(message, ProtoOAErrorRes)
@@ -159,7 +195,6 @@ def fetch():
     if state["error"]:
         print(f"\n  ✗ Error: {state['error']}\n")
         sys.exit(1)
-
     print()
 
 if __name__ == "__main__":
