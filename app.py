@@ -129,6 +129,7 @@ def header(active_page="overview"):
             nav_btn("📅  Daily View",  "nav-daily",    active=(active_page=="daily")),
             nav_btn("🕯  Market View", "nav-market",   active=(active_page=="market")),
             nav_btn("📋  Journal",     "nav-journal",  active=(active_page=="journal")),
+            nav_btn("🔍  Scenarios",   "nav-scenarios",active=(active_page=="scenarios")),
         ]),
     ])
 
@@ -320,6 +321,68 @@ page_journal = html.Div(id="page-journal", children=[
     dcc.Store(id="live-dd-store", data={}),
 ])
 
+# ── Page 5: Scenarios ────────────────────────────────────────
+page_scenarios = html.Div(id="page-scenarios", children=[
+    header("scenarios"),
+
+    # Controls row
+    html.Div(style={"display": "flex", "alignItems": "center", "gap": "16px",
+                    "marginBottom": "20px", "background": PANEL,
+                    "border": f"1px solid {BORDER}",
+                    "borderRadius": "10px", "padding": "16px 20px"},
+    children=[
+        html.Div("Date:", style={"fontSize": "10px", "color": MUTED,
+                                  "letterSpacing": "2px", "textTransform": "uppercase"}),
+        dcc.DatePickerSingle(
+            id="sc-date-picker",
+            date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            display_format="DD MMM YYYY",
+            style={"fontFamily": "monospace"},
+        ),
+        html.Div(id="sc-day-summary",
+                 style={"fontSize": "11px", "color": MUTED, "marginLeft": "auto"}),
+        html.Button("🕯  Load Chart", id="sc-chart-btn", n_clicks=0,
+                    style={"fontSize": "11px", "padding": "6px 14px",
+                           "background": CARD, "color": MUTED,
+                           "border": f"1px solid {BORDER}",
+                           "borderRadius": "6px", "cursor": "pointer"}),
+        html.Button("⬇  Download CSV", id="sc-download-btn", n_clicks=0,
+                    style={"fontSize": "11px", "padding": "6px 14px",
+                           "background": CARD, "color": TEXT,
+                           "border": f"1px solid {BORDER}",
+                           "borderRadius": "6px", "cursor": "pointer"}),
+    ]),
+
+    # Scenario summary cards
+    html.Div(id="sc-cards",
+             style={"display": "flex", "gap": "12px", "flexWrap": "wrap",
+                    "marginBottom": "20px"}),
+
+    # Market chart — only loads when button clicked
+    html.Div([
+        html.Div(id="sc-chart-title",
+                 style={"fontSize": "9px", "letterSpacing": "2px",
+                        "textTransform": "uppercase", "color": MUTED,
+                        "marginBottom": "12px"}),
+        dcc.Loading(type="circle", color=GOLD, children=
+            html.Div(id="sc-market-chart-wrap")
+        ),
+    ], style={"background": PANEL, "border": f"1px solid {BORDER}",
+              "borderRadius": "10px", "padding": "20px", "marginBottom": "16px"}),
+
+    # Scenarios table
+    html.Div([
+        html.Div("Scenario log", style={"fontSize": "9px", "letterSpacing": "2px",
+                                         "textTransform": "uppercase", "color": MUTED,
+                                         "marginBottom": "12px"}),
+        html.Div(id="sc-table"),
+    ], style={"background": PANEL, "border": f"1px solid {BORDER}",
+              "borderRadius": "10px", "padding": "20px"}),
+
+    dcc.Download(id="sc-download"),
+    dcc.Store(id="sc-store", data={}),
+])
+
 # ── App layout ────────────────────────────────────────────────
 app.layout = html.Div(
     style={"background": BG, "minHeight": "100vh", "padding": "28px",
@@ -332,18 +395,20 @@ app.layout = html.Div(
 
 # ── Page routing ──────────────────────────────────────────────
 @callback(
-    Output("page-store",   "data"),
-    Input("nav-overview",  "n_clicks"),
-    Input("nav-daily",     "n_clicks"),
-    Input("nav-market",    "n_clicks"),
-    Input("nav-journal",   "n_clicks"),
+    Output("page-store",    "data"),
+    Input("nav-overview",   "n_clicks"),
+    Input("nav-daily",      "n_clicks"),
+    Input("nav-market",     "n_clicks"),
+    Input("nav-journal",    "n_clicks"),
+    Input("nav-scenarios",  "n_clicks"),
     prevent_initial_call=True,
 )
 def switch_page(*_):
     triggered = ctx.triggered_id
-    if triggered == "nav-daily":   return "daily"
-    if triggered == "nav-market":  return "market"
-    if triggered == "nav-journal": return "journal"
+    if triggered == "nav-daily":     return "daily"
+    if triggered == "nav-market":    return "market"
+    if triggered == "nav-journal":   return "journal"
+    if triggered == "nav-scenarios": return "scenarios"
     return "overview"
 
 @callback(
@@ -351,9 +416,10 @@ def switch_page(*_):
     Input("page-store",    "data"),
 )
 def render_page(page):
-    if page == "daily":   return page_daily
-    if page == "market":  return page_market
-    if page == "journal": return page_journal
+    if page == "daily":     return page_daily
+    if page == "market":    return page_market
+    if page == "journal":   return page_journal
+    if page == "scenarios": return page_scenarios
     return page_overview
 
 # ── Overview: timeframe store ─────────────────────────────────
@@ -920,9 +986,16 @@ def update_market(selected_date, tf_label):
     return html.Div(charts), summary
 
 
+_DIGITS_CACHE = {}
+
 def digits_from_raw(raw_value, symbol_id):
     """Find correct price divisor by matching raw bar value to known fill_price."""
     import math
+    # Use cache — digits don't change per symbol
+    if symbol_id in _DIGITS_CACHE:
+        d = _DIGITS_CACHE[symbol_id]
+        print(f"  → digits={d} (cached), price≈{raw_value/(10**d):.2f}")
+        return d
     df = load_trades()
     if df is not None:
         sym_trades = df[df["symbol_id"] == symbol_id]
@@ -931,11 +1004,13 @@ def digits_from_raw(raw_value, symbol_id):
             if target > 0:
                 d = round(math.log10(raw_value / target))
                 d = max(0, min(d, 10))
+                _DIGITS_CACHE[symbol_id] = d
                 print(f"  → digits={d}, price≈{raw_value/(10**d):.2f} (target={target:.2f})")
                 return d
     # Fallback: find divisor landing in 10–500,000
     for d in range(10):
         if 10 < raw_value / (10**d) < 500_000:
+            _DIGITS_CACHE[symbol_id] = d
             return d
     return 5
 
@@ -1228,36 +1303,6 @@ def build_daily_summary():
     return pd.DataFrame(rows)
 
 
-# ── Journal: sort buttons ─────────────────────────────────────
-@callback(
-    Output("sort-store",  "data"),
-    Output("sort-date",   "style"),
-    Output("sort-pnl",    "style"),
-    Output("sort-trades", "style"),
-    Input("sort-date",    "n_clicks"),
-    Input("sort-pnl",     "n_clicks"),
-    Input("sort-trades",  "n_clicks"),
-    prevent_initial_call=True,
-)
-def set_sort(*_):
-    triggered = ctx.triggered_id
-    sort_key  = {"sort-date": "date", "sort-pnl": "pnl",
-                 "sort-trades": "trades"}.get(triggered, "date")
-
-    def btn_style(active):
-        return {"fontSize": "11px", "padding": "5px 12px",
-                "background": GOLD if active else CARD,
-                "color": BG if active else MUTED,
-                "border": f"1px solid {GOLD if active else BORDER}",
-                "borderRadius": "6px", "cursor": "pointer",
-                "fontWeight": "700" if active else "400"}
-
-    return (sort_key,
-            btn_style(sort_key == "date"),
-            btn_style(sort_key == "pnl"),
-            btn_style(sort_key == "trades"))
-
-
 # ── Journal: live drawdown fetch ─────────────────────────────
 @callback(
     Output("live-dd-store",  "data"),
@@ -1415,6 +1460,556 @@ def download_csv(_, live_dd_data):
     if live_dd_data:
         df["Live DD (£)"] = df["Date"].map(lambda d: live_dd_data.get(d, "—"))
     return dcc.send_data_frame(df.to_csv, "daily_journal.csv", index=False)
+
+
+# ── Scenarios: colour palette per scenario ───────────────────
+SC_COLOURS = [
+    "#00e5ff", "#f0b429", "#a8ff78", "#ff6b9d",
+    "#c77dff", "#ff9800", "#00bcd4", "#e91e63",
+    "#8bc34a", "#ff5722",
+]
+
+def build_scenarios(date_str):
+    """
+    Detect trading scenarios by clustering exits.
+    A new scenario starts when there is a gap > 10 min between consecutive exits.
+    This matches the pattern: burst of entries + quick closes = one dip scenario.
+    """
+    df_all   = pd.read_csv(DATA_FILE)
+    df_all["time"] = pd.to_datetime(df_all["time"], format="ISO8601", utc=True)
+    symbols  = load_symbols()
+
+    sel_dt  = pd.Timestamp(date_str).tz_localize("UTC")
+    sel_end = sel_dt + timedelta(days=1)
+
+    openings = df_all[df_all["is_closing"] == False].copy()
+    closings = df_all[
+        (df_all["is_closing"] == True) &
+        (df_all["time"] >= sel_dt) &
+        (df_all["time"] < sel_end)
+    ].copy().sort_values("time").reset_index(drop=True)
+
+    if closings.empty:
+        return pd.DataFrame()
+
+    # Gap between consecutive exits — new scenario if gap > 10 min
+    GAP_MINS = 10
+    gaps = closings["time"].diff().dt.total_seconds().fillna(9999) / 60
+    closings["scenario"] = (gaps > GAP_MINS).cumsum() + 1
+
+    rows = []
+    for sc_num, grp in closings.groupby("scenario"):
+        grp = grp.sort_values("time")
+
+        # Get entry times for these positions
+        pos_ids  = grp["position_id"].tolist()
+        entries  = openings[openings["position_id"].isin(pos_ids)]
+
+        first_entry  = entries["time"].min() if not entries.empty else grp["time"].iloc[0]
+        first_exit   = grp["time"].min()
+        last_exit    = grp["time"].max()
+        duration_s   = (last_exit - first_exit).total_seconds()
+        if duration_s < 60:
+            dur_str = f"{int(duration_s)}s"
+        elif duration_s < 3600:
+            dur_str = f"{int(duration_s//60)}m {int(duration_s%60)}s"
+        else:
+            dur_str = f"{int(duration_s//3600)}h {int((duration_s%3600)//60)}m"
+
+        pnl      = grp["pnl"].sum()
+        n        = len(grp)
+        wins     = len(grp[grp["pnl"] > 0])
+        best     = grp["pnl"].max()
+        worst    = grp["pnl"].min()
+        sym_ids  = grp["symbol_id"].unique()
+        syms_str = ", ".join([symbols.get(str(s), f"ID:{s}") for s in sym_ids])
+        comm     = grp["commission"].sum()
+
+        entry_dirs = entries[entries["position_id"].isin(pos_ids)]["direction"].value_counts()
+        buys  = int(entry_dirs.get("BUY",  0))
+        sells = int(entry_dirs.get("SELL", 0))
+
+        rows.append({
+            "Scenario":       int(sc_num),
+            "Start":          first_entry.strftime("%H:%M:%S"),
+            "First Close":    first_exit.strftime("%H:%M:%S"),
+            "Last Close":     last_exit.strftime("%H:%M:%S"),
+            "Duration":       dur_str,
+            "Trades":         n,
+            "Buys":           buys,
+            "Sells":          sells,
+            "P&L (£)":        round(pnl, 2),
+            "Commission (£)": round(comm, 2),
+            "Net (£)":        round(pnl + comm, 2),
+            "Win %":          round(wins / n * 100) if n else 0,
+            "Best (£)":       round(best, 2),
+            "Worst (£)":      round(worst, 2),
+            "Instruments":    syms_str,
+            "_sym_ids":       list(sym_ids),
+            "_first_entry":   first_entry,
+            "_last_exit":     last_exit,
+        })
+
+    return pd.DataFrame(rows)
+
+
+# ── Scenarios: table + cards (instant, CSV only) ──────────────
+@callback(
+    Output("sc-cards",      "children"),
+    Output("sc-table",      "children"),
+    Output("sc-day-summary","children"),
+    Output("sc-store",      "data"),
+    Input("sc-date-picker", "date"),
+    Input("page-store",     "data"),
+)
+def update_scenario_table(selected_date, page):
+    if page != "scenarios":
+        raise dash.exceptions.PreventUpdate
+    if not selected_date:
+        selected_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    df_sc = build_scenarios(selected_date)
+
+    if df_sc.empty:
+        msg = html.Div([
+            html.Div("📭  No trades on this day.",
+                     style={"color": MUTED, "fontSize": "14px",
+                            "padding": "20px 0", "textAlign": "center"}),
+        ])
+        return [], msg, "No trades", {}
+
+    n_sc      = len(df_sc)
+    total_pnl = df_sc["P&L (£)"].sum()
+    summary   = (f"{n_sc} scenarios  ·  {df_sc['Trades'].sum()} trades  ·  "
+                 f'{"+" if total_pnl>=0 else ""}£{total_pnl:.2f}')
+
+    # Cards
+    cards = []
+    for i, (_, row) in enumerate(df_sc.iterrows()):
+        pnl   = row["P&L (£)"]
+        color = SC_COLOURS[i % len(SC_COLOURS)]
+        cards.append(html.Div([
+            html.Div(f'Scenario {row["Scenario"]}',
+                     style={"fontSize": "9px", "letterSpacing": "2px",
+                            "textTransform": "uppercase",
+                            "color": color, "marginBottom": "4px"}),
+            html.Div(f'{"+" if pnl>=0 else ""}£{pnl:.2f}',
+                     style={"fontSize": "20px", "fontWeight": "800",
+                            "color": UP if pnl >= 0 else DOWN}),
+            html.Div(f'{row["Start"]} → {row["Last Close"]}',
+                     style={"fontSize": "10px", "color": MUTED, "marginTop": "2px"}),
+            html.Div(f'{row["Trades"]} trades · {row["Duration"]}',
+                     style={"fontSize": "10px", "color": MUTED}),
+            html.Div(f'{row["Buys"]}B / {row["Sells"]}S  ·  {row["Instruments"]}',
+                     style={"fontSize": "10px", "color": MUTED, "marginTop": "2px"}),
+        ], style={"background": CARD,
+                  "border": f"1px solid {BORDER}",
+                  "borderTop": f"3px solid {color}",
+                  "borderRadius": "10px", "padding": "14px 18px",
+                  "minWidth": "200px"}))
+
+    # Table
+    cols = ["Scenario","Start","First Close","Last Close","Duration",
+            "Trades","Buys","Sells","P&L (£)","Net (£)",
+            "Win %","Best (£)","Worst (£)","Instruments"]
+
+    th = {"fontSize":"9px","letterSpacing":"1px","textTransform":"uppercase",
+          "color":MUTED,"padding":"10px 14px","background":CARD,
+          "borderBottom":f"1px solid {BORDER}","textAlign":"right","whiteSpace":"nowrap"}
+    thl = {**th,"textAlign":"left"}
+
+    def td(c=TEXT, align="right"):
+        return {"fontSize":"11px","color":c,"padding":"9px 14px",
+                "textAlign":align,"borderBottom":f"1px solid {BORDER}","whiteSpace":"nowrap"}
+
+    hrow = html.Tr([html.Th(c, style=thl if c in
+                   ["Start","First Close","Last Close","Duration","Instruments"]
+                   else th) for c in cols])
+
+    drows = []
+    for i, (_, row) in enumerate(df_sc.iterrows()):
+        pnl   = row["P&L (£)"]
+        color = SC_COLOURS[i % len(SC_COLOURS)]
+        wr    = row["Win %"]
+        drows.append(html.Tr([
+            html.Td(f'S{row["Scenario"]}',
+                    style={**td(color,"right"),"fontWeight":"700",
+                           "borderLeft":f"3px solid {color}"}),
+            html.Td(row["Start"],          style=td(TEXT,"left")),
+            html.Td(row["First Close"],    style=td(TEXT,"left")),
+            html.Td(row["Last Close"],     style=td(TEXT,"left")),
+            html.Td(row["Duration"],       style=td(MUTED,"left")),
+            html.Td(str(row["Trades"]),    style=td()),
+            html.Td(str(row["Buys"]),      style=td(UP)),
+            html.Td(str(row["Sells"]),     style=td(DOWN)),
+            html.Td(f'{"+"if pnl>=0 else""}£{pnl:.2f}', style=td(UP if pnl>=0 else DOWN)),
+            html.Td(f'{"+"if row["Net (£)"]>=0 else""}£{row["Net (£)"]:.2f}',
+                    style=td(UP if row["Net (£)"]>=0 else DOWN)),
+            html.Td(f'{wr:.0f}%',          style=td(UP if wr>=50 else DOWN)),
+            html.Td(f'+£{row["Best (£)"]:.2f}',  style=td(UP)),
+            html.Td(f'£{row["Worst (£)"]:.2f}',  style=td(DOWN)),
+            html.Td(row["Instruments"],    style=td(TEXT,"left")),
+        ]))
+
+    table = html.Div(
+        html.Table([html.Thead(hrow), html.Tbody(drows)],
+                   style={"width":"100%","borderCollapse":"collapse"}),
+        style={"overflowX":"auto"},
+    )
+
+    # Store serialisable version of df
+    store = df_sc.drop(columns=["_sym_ids","_first_entry","_last_exit"],
+                       errors="ignore").to_dict("records")
+
+    return cards, table, summary, store
+
+
+# ── Scenarios: chart (only on button click) ───────────────────
+@callback(
+    Output("sc-market-chart-wrap", "children"),
+    Output("sc-chart-title",       "children"),
+    Output("sc-chart-btn",         "style"),
+    Input("sc-chart-btn",          "n_clicks"),
+    dash.dependencies.State("sc-date-picker", "date"),
+    prevent_initial_call=True,
+)
+def load_scenario_chart(n_clicks, selected_date):
+    if not selected_date:
+        return html.Div(), "", {}
+
+    df_sc   = build_scenarios(selected_date)
+    symbols = load_symbols()
+
+    if df_sc.empty:
+        return html.Div("No scenarios to chart.",
+                        style={"color": MUTED, "padding": "20px"}), "", {}
+
+    # Primary symbol = most traded
+    sym_counts = {}
+    for _, row in df_sc.iterrows():
+        for s in row["_sym_ids"]:
+            sym_counts[s] = sym_counts.get(s, 0) + 1
+    primary_sym = max(sym_counts, key=sym_counts.get)
+
+    sel_dt  = pd.Timestamp(selected_date).tz_localize("UTC")
+    sel_end = sel_dt + timedelta(days=1)
+
+    candles = fetch_candles_sync(primary_sym, sel_dt, sel_end, period=5, minutes=5)
+
+    # Load all deals for markers
+    df_raw = pd.read_csv(DATA_FILE)
+    df_raw["time"] = pd.to_datetime(df_raw["time"], format="ISO8601", utc=True)
+    day_raw  = df_raw[(df_raw["time"]>=sel_dt)&(df_raw["time"]<sel_end)&
+                      (df_raw["symbol_id"]==primary_sym)].copy()
+    openings_raw = day_raw[day_raw["is_closing"]==False]
+    closings_raw = day_raw[day_raw["is_closing"]==True].sort_values("time").copy()
+
+    if not closings_raw.empty:
+        gaps = closings_raw["time"].diff().dt.total_seconds().fillna(9999)/60
+        closings_raw["scenario"] = (gaps > 10).cumsum() + 1
+
+    fig = go.Figure()
+
+    if candles is not None and not candles.empty:
+        fig.add_trace(go.Candlestick(
+            x=candles["time"],
+            open=candles["open"], high=candles["high"],
+            low=candles["low"],   close=candles["close"],
+            name=symbols.get(str(primary_sym), str(primary_sym)),
+            increasing_line_color=UP, increasing_fillcolor=UP,
+            decreasing_line_color=DOWN, decreasing_fillcolor=DOWN,
+            line={"width":1},
+        ))
+        add_session_boxes(fig, sel_dt)
+
+    legend_added = set()
+    for i, (_, sc_row) in enumerate(df_sc.iterrows()):
+        sc_num = sc_row["Scenario"]
+        color  = SC_COLOURS[i % len(SC_COLOURS)]
+        r,g,b  = int(color[1:3],16),int(color[3:5],16),int(color[5:7],16)
+
+        fig.add_vrect(x0=sc_row["_first_entry"], x1=sc_row["_last_exit"],
+                      fillcolor=f"rgba({r},{g},{b},0.08)", layer="below", line_width=0)
+        fig.add_annotation(
+            x=sc_row["_first_entry"], xanchor="left",
+            y=0.97, yanchor="top", yref="paper",
+            text=f"S{sc_num}", showarrow=False,
+            font={"size":9,"color":color}, bgcolor="rgba(0,0,0,0)",
+        )
+
+        sc_cls = closings_raw[closings_raw["scenario"]==sc_num] if not closings_raw.empty else pd.DataFrame()
+        for _, trade in sc_cls.iterrows():
+            op = openings_raw[openings_raw["position_id"]==trade["position_id"]]
+            is_buy = op.iloc[0]["direction"]=="BUY" if not op.empty else True
+            pnl    = trade["pnl"]
+
+            if not op.empty:
+                lk = f"e{sc_num}"
+                fig.add_trace(go.Scatter(
+                    x=[op.iloc[0]["time"]], y=[op.iloc[0]["fill_price"]],
+                    mode="markers",
+                    marker={"symbol":"triangle-up" if is_buy else "triangle-down",
+                            "size":10,"color":color,"line":{"color":BG,"width":1}},
+                    name=f"S{sc_num}", legendgroup=f"s{sc_num}",
+                    showlegend=(lk not in legend_added),
+                    hovertemplate=(f"S{sc_num} ENTRY {'BUY' if is_buy else 'SELL'}<br>"
+                                   f"Price: {op.iloc[0]['fill_price']:.2f}<br>"
+                                   f"Time: %{{x|%H:%M:%S}}<extra></extra>"),
+                ))
+                legend_added.add(lk)
+                fig.add_trace(go.Scatter(
+                    x=[op.iloc[0]["time"], trade["time"]],
+                    y=[op.iloc[0]["fill_price"], trade["fill_price"]],
+                    mode="lines",
+                    line={"color":color,"width":1,"dash":"dot" if pnl<0 else "solid"},
+                    showlegend=False, hoverinfo="skip", opacity=0.4,
+                ))
+
+            fig.add_trace(go.Scatter(
+                x=[trade["time"]], y=[trade["fill_price"]],
+                mode="markers",
+                marker={"symbol":"x","size":8,
+                        "color":UP if pnl>=0 else DOWN,
+                        "line":{"color":BG,"width":1}},
+                name=f"S{sc_num} exit", legendgroup=f"s{sc_num}",
+                showlegend=False,
+                hovertemplate=(f"S{sc_num} EXIT<br>Price: {trade['fill_price']:.2f}<br>"
+                               f'P&L: {"+"if pnl>=0 else""}£{pnl:.2f}<extra></extra>'),
+            ))
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=PANEL,
+        font={"family":"monospace","color":TEXT,"size":11},
+        margin={"t":10,"r":40,"b":40,"l":10}, height=380,
+        xaxis={"gridcolor":BORDER,"zerolinecolor":BORDER,
+               "tickfont":{"color":MUTED},"rangeslider":{"visible":False},"type":"date"},
+        yaxis={"gridcolor":BORDER,"zerolinecolor":BORDER,
+               "tickfont":{"color":MUTED},"side":"right"},
+        legend={"bgcolor":"rgba(0,0,0,0)","font":{"color":MUTED,"size":10},
+                "orientation":"h","x":0,"y":1.08},
+        hovermode="x unified",
+        hoverlabel={"bgcolor":CARD,"font":{"color":TEXT,"family":"monospace"}},
+    )
+
+    title = (f"{symbols.get(str(primary_sym),str(primary_sym))}  ·  "
+             f"5m  ·  {len(df_sc)} scenarios")
+
+    btn_style = {"fontSize":"11px","padding":"6px 14px","background":UP,
+                 "color":BG,"border":f"1px solid {UP}",
+                 "borderRadius":"6px","cursor":"pointer","fontWeight":"700"}
+
+    return dcc.Graph(figure=fig,
+                     config={"displayModeBar":True,
+                             "modeBarButtonsToRemove":["lasso2d","select2d"],
+                             "displaylogo":False},
+                     style={"height":"380px"}), title, btn_style
+
+
+# ── Scenarios: CSV download ───────────────────────────────────
+@callback(
+    Output("sc-download",    "data"),
+    Input("sc-download-btn", "n_clicks"),
+    dash.dependencies.State("sc-store",      "data"),
+    prevent_initial_call=True,
+)
+def download_scenarios(_, store_data):
+    if not store_data:
+        return None
+    df = pd.DataFrame(store_data)
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return dcc.send_data_frame(df.to_csv, f"scenarios_{date_str}.csv", index=False)
+
+
+# ── Journal: build daily summary dataframe ───────────────────
+def calc_exposure_drawdown(date_str, all_df):
+    """
+    Maximum Adverse Exposure — uses fill prices from all deals as price checkpoints.
+
+    For each open position, at every price event during its lifetime,
+    we calculate the worst the position went against us (using the lowest
+    price seen for BUYs, highest for SELLs). We sum across all simultaneously
+    open positions to find the worst total floating loss at any point.
+
+    This is purely from the CSV — no API calls needed.
+    """
+    date_utc  = pd.Timestamp(date_str).tz_localize("UTC")
+    date_end  = date_utc + pd.Timedelta(days=1)
+
+    day_all   = all_df[(all_df["time"] >= date_utc) & (all_df["time"] < date_end)].copy()
+    if day_all.empty:
+        return None
+
+    openings   = day_all[day_all["is_closing"] == False]
+    closings   = day_all[day_all["is_closing"] == True]
+    all_prices = day_all[["time", "symbol_id", "fill_price"]].copy()
+
+    # Build positions with scale factor derived from actual P&L
+    positions = []
+    for _, cl in closings.iterrows():
+        op = openings[openings["position_id"] == cl["position_id"]]
+        if op.empty:
+            continue
+        op         = op.iloc[0]
+        price_diff = cl["fill_price"] - op["fill_price"]
+        if op["direction"] == "SELL":
+            price_diff = -price_diff
+        vol    = op["volume"]
+        scale  = (cl["pnl"] / (price_diff * vol)
+                  if (price_diff != 0 and vol != 0) else 1.0)
+        positions.append({
+            "symbol_id":   cl["symbol_id"],
+            "direction":   op["direction"],
+            "volume":      vol,
+            "entry_price": op["fill_price"],
+            "entry_time":  op["time"],
+            "exit_time":   cl["time"],
+            "scale":       scale,
+        })
+
+    if not positions:
+        return None
+
+    pos_df = pd.DataFrame(positions)
+
+    # Events = every fill_price timestamp during the day
+    event_times = sorted(set(all_prices["time"].tolist()))
+    if not event_times:
+        return None
+
+    worst_exposure = 0.0
+
+    for t in event_times:
+        open_pos = pos_df[
+            (pos_df["entry_time"] <= t) & (pos_df["exit_time"] > t)
+        ]
+        if open_pos.empty:
+            continue
+
+        total_float = 0.0
+        for _, pos in open_pos.iterrows():
+            # Worst price seen for this symbol from entry up to now
+            sym_px = all_prices[
+                (all_prices["symbol_id"] == pos["symbol_id"]) &
+                (all_prices["time"] >= pos["entry_time"]) &
+                (all_prices["time"] <= t)
+            ]["fill_price"]
+
+            if sym_px.empty:
+                continue
+
+            if pos["direction"] == "BUY":
+                worst_price = sym_px.min()
+                adverse     = worst_price - pos["entry_price"]
+            else:
+                worst_price = sym_px.max()
+                adverse     = pos["entry_price"] - worst_price
+
+            total_float += adverse * pos["volume"] * pos["scale"]
+
+        if total_float < worst_exposure:
+            worst_exposure = total_float
+
+    return round(worst_exposure, 2) if worst_exposure < 0 else 0.0
+
+
+def build_daily_summary():
+    """Aggregate all closing trades into per-day rows."""
+    import math
+    df_all  = pd.read_csv(DATA_FILE)
+    df_all["time"] = pd.to_datetime(df_all["time"], format="ISO8601", utc=True)
+    symbols = load_symbols()
+    closing = df_all[df_all["is_closing"] == True].copy()
+    if closing.empty:
+        return pd.DataFrame()
+    closing["date"] = closing["time"].dt.date
+
+    def get_sessions_for_hour(hour):
+        found = []
+        for s in SESSIONS:
+            st, en = s["start"], s["end"]
+            if st < en:
+                if st <= hour < en: found.append(s["name"])
+            else:
+                if hour >= st or hour < en: found.append(s["name"])
+        return found
+
+    rows = []
+    for date, day_df in closing.groupby("date"):
+        day_s      = day_df.sort_values("time")
+        total_pnl  = day_s["pnl"].sum()
+        total_comm = day_s["commission"].sum()
+        n_trades   = len(day_s)
+        wins       = len(day_s[day_s["pnl"] > 0])
+        best       = day_s["pnl"].max()
+        worst      = day_s["pnl"].min()
+
+        # Closed-trade drawdown (fast — from CSV only)
+        day_s = day_s.copy()
+        day_s["cum_pnl"] = day_s["pnl"].cumsum()
+        running_max = day_s["cum_pnl"].cummax()
+        max_dd      = (day_s["cum_pnl"] - running_max).min()
+
+        # Instruments
+        sym_ids     = day_s["symbol_id"].unique()
+        instruments = ", ".join([symbols.get(str(s), f"ID:{s}") for s in sym_ids])
+
+        # Sessions touched
+        all_hours = set(day_s["time"].dt.hour.tolist())
+        seen_sess = []
+        for h in sorted(all_hours):
+            for s in get_sessions_for_hour(h):
+                if s not in seen_sess: seen_sess.append(s)
+
+        # First trade session
+        first_hour    = day_s["time"].iloc[0].hour
+        first_session = ", ".join(get_sessions_for_hour(first_hour)) or "Off-hours"
+
+        rows.append({
+            "Date":              str(date),
+            "P&L (£)":           round(total_pnl, 2),
+            "Commission (£)":    round(total_comm, 2),
+            "Net (£)":           round(total_pnl + total_comm, 2),
+            "Trades":            n_trades,
+            "Wins":              wins,
+            "Win %":             round(wins / n_trades * 100, 1) if n_trades else 0,
+            "Best (£)":          round(best, 2),
+            "Worst (£)":         round(worst, 2),
+            "Closed DD (£)":     round(max_dd, 2),
+            "Live DD (£)":       "—",   # populated on demand
+            "Instruments":       instruments,
+            "First Session":     first_session,
+            "Sessions":          ", ".join(seen_sess),
+        })
+
+    return pd.DataFrame(rows)
+
+
+# ── Journal: sort buttons ─────────────────────────────────────
+@callback(
+    Output("sort-store",  "data"),
+    Output("sort-date",   "style"),
+    Output("sort-pnl",    "style"),
+    Output("sort-trades", "style"),
+    Input("sort-date",    "n_clicks"),
+    Input("sort-pnl",     "n_clicks"),
+    Input("sort-trades",  "n_clicks"),
+    prevent_initial_call=True,
+)
+def set_sort2(*_):
+    triggered = ctx.triggered_id
+    sort_key  = {"sort-date": "date", "sort-pnl": "pnl",
+                 "sort-trades": "trades"}.get(triggered, "date")
+    def btn_style(active):
+        return {"fontSize": "11px", "padding": "5px 12px",
+                "background": GOLD if active else CARD,
+                "color": BG if active else MUTED,
+                "border": f"1px solid {GOLD if active else BORDER}",
+                "borderRadius": "6px", "cursor": "pointer",
+                "fontWeight": "700" if active else "400"}
+    return (sort_key,
+            btn_style(sort_key == "date"),
+            btn_style(sort_key == "pnl"),
+            btn_style(sort_key == "trades"))
 
 
 if __name__ == "__main__":
