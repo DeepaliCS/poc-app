@@ -295,6 +295,12 @@ page_journal = html.Div(id="page-journal", children=[
                     style={"fontSize": "11px", "padding": "7px 18px", "background": CARD,
                            "color": TEXT, "border": f"1px solid {BORDER}",
                            "borderRadius": "6px", "cursor": "pointer"}),
+        html.Button("📊  Calculate Exposure DD", id="live-dd-btn", n_clicks=0,
+                    style={"fontSize": "11px", "padding": "7px 18px", "background": CARD,
+                           "color": MUTED, "border": f"1px solid {BORDER}",
+                           "borderRadius": "6px", "cursor": "pointer"}),
+        html.Div("(instant — from CSV)", id="live-dd-hint",
+                 style={"fontSize": "10px", "color": MUTED}),
     ]),
 
     # Summary stats bar
@@ -303,12 +309,15 @@ page_journal = html.Div(id="page-journal", children=[
                     "gap": "12px", "marginBottom": "20px"}),
 
     # Table
-    html.Div(id="journal-table",
-             style={"background": PANEL, "border": f"1px solid {BORDER}",
-                    "borderRadius": "10px", "padding": "20px"}),
+    dcc.Loading(type="circle", color=GOLD, children=
+        html.Div(id="journal-table",
+                 style={"background": PANEL, "border": f"1px solid {BORDER}",
+                        "borderRadius": "10px", "padding": "20px"})
+    ),
 
     dcc.Download(id="journal-download"),
-    dcc.Store(id="sort-store", data="date"),
+    dcc.Store(id="sort-store",   data="date"),
+    dcc.Store(id="live-dd-store", data={}),
 ])
 
 # ── App layout ────────────────────────────────────────────────
@@ -1051,11 +1060,73 @@ def fetch_candles_sync(symbol_id, from_dt, to_dt, period, minutes):
     # Schedule client connection on the reactor thread
     reactor.callFromThread(client.startService)
 
-    done_event.wait(timeout=30)
+    done_event.wait(timeout=45)
     return state["candles"]
 
 
 # ── Journal: build daily summary dataframe ───────────────────
+def calc_exposure_drawdown(date_str, all_df):
+    """
+    Maximum Simultaneous Adverse Exposure (MSAE) — CSV only, no API calls needed.
+
+    Logic:
+    1. For each closed position, record its actual P&L and the window it was open
+    2. At every moment during the day, find all positions that were open simultaneously
+    3. Sum only the losing ones — this is the worst-case exposure at that point
+    4. Return the minimum (most negative) value across the day
+
+    This answers: "what was the maximum I could have been down at any point,
+    based only on trades that actually closed at a loss?"
+
+    It's conservative (ignores winners that went negative before recovering)
+    but 100% accurate from the CSV — no market data needed.
+    """
+    date_utc = pd.Timestamp(date_str).tz_localize("UTC")
+    date_end = date_utc + timedelta(days=1)
+
+    day_all  = all_df[(all_df["time"] >= date_utc) & (all_df["time"] < date_end)].copy()
+    if day_all.empty:
+        return None
+
+    openings = day_all[day_all["is_closing"] == False]
+    closings = day_all[day_all["is_closing"] == True]
+
+    # Build position records
+    positions = []
+    for _, cl in closings.iterrows():
+        op = openings[openings["position_id"] == cl["position_id"]]
+        if op.empty:
+            continue
+        positions.append({
+            "entry_time": op.iloc[0]["time"],
+            "exit_time":  cl["time"],
+            "pnl":        cl["pnl"],
+        })
+
+    if not positions:
+        return None
+
+    pos_df = pd.DataFrame(positions)
+
+    # Check exposure at every entry and exit event
+    event_times = sorted(
+        set(pos_df["entry_time"].tolist() + pos_df["exit_time"].tolist())
+    )
+
+    worst = 0.0
+    for t in event_times:
+        # Positions open at time t
+        open_at_t = pos_df[
+            (pos_df["entry_time"] <= t) & (pos_df["exit_time"] > t)
+        ]
+        # Sum only losing positions — conservative but accurate
+        loss_exposure = open_at_t[open_at_t["pnl"] < 0]["pnl"].sum()
+        if loss_exposure < worst:
+            worst = loss_exposure
+
+    return round(worst, 2) if worst < 0 else 0.0
+
+
 def build_daily_summary():
     """Aggregate all closing trades into per-day rows."""
     import math
@@ -1087,7 +1158,7 @@ def build_daily_summary():
         best       = day_s["pnl"].max()
         worst      = day_s["pnl"].min()
 
-        # Max drawdown
+        # Closed-trade drawdown (fast — from CSV only)
         day_s = day_s.copy()
         day_s["cum_pnl"] = day_s["pnl"].cumsum()
         running_max = day_s["cum_pnl"].cummax()
@@ -1109,19 +1180,20 @@ def build_daily_summary():
         first_session = ", ".join(get_sessions_for_hour(first_hour)) or "Off-hours"
 
         rows.append({
-            "Date":           str(date),
-            "P&L (£)":        round(total_pnl, 2),
-            "Commission (£)": round(total_comm, 2),
-            "Net (£)":        round(total_pnl + total_comm, 2),
-            "Trades":         n_trades,
-            "Wins":           wins,
-            "Win %":          round(wins / n_trades * 100, 1) if n_trades else 0,
-            "Best (£)":       round(best, 2),
-            "Worst (£)":      round(worst, 2),
-            "Max Drawdown":   round(max_dd, 2),
-            "Instruments":    instruments,
-            "First Session":  first_session,
-            "Sessions":       ", ".join(seen_sess),
+            "Date":              str(date),
+            "P&L (£)":           round(total_pnl, 2),
+            "Commission (£)":    round(total_comm, 2),
+            "Net (£)":           round(total_pnl + total_comm, 2),
+            "Trades":            n_trades,
+            "Wins":              wins,
+            "Win %":             round(wins / n_trades * 100, 1) if n_trades else 0,
+            "Best (£)":          round(best, 2),
+            "Worst (£)":         round(worst, 2),
+            "Closed DD (£)":     round(max_dd, 2),
+            "Live DD (£)":       "—",   # populated on demand
+            "Instruments":       instruments,
+            "First Session":     first_session,
+            "Sessions":          ", ".join(seen_sess),
         })
 
     return pd.DataFrame(rows)
@@ -1157,14 +1229,43 @@ def set_sort(*_):
             btn_style(sort_key == "trades"))
 
 
+# ── Journal: live drawdown fetch ─────────────────────────────
+@callback(
+    Output("live-dd-store",  "data"),
+    Output("live-dd-btn",    "children"),
+    Output("live-dd-btn",    "style"),
+    Input("live-dd-btn",     "n_clicks"),
+    prevent_initial_call=True,
+)
+def fetch_live_dd(_):
+    """Calculate exposure drawdown for every trading day — CSV only, instant."""
+    df_all = pd.read_csv(DATA_FILE)
+    df_all["time"] = pd.to_datetime(df_all["time"], format="ISO8601", utc=True)
+
+    closing = df_all[df_all["is_closing"] == True].copy()
+    closing["date"] = closing["time"].dt.date
+    dates = sorted(closing["date"].unique())
+
+    results = {}
+    for date in dates:
+        dd = calc_exposure_drawdown(str(date), df_all)
+        results[str(date)] = dd if dd is not None else 0.0
+
+    btn_style = {"fontSize": "11px", "padding": "7px 18px", "background": UP,
+                 "color": BG, "border": f"1px solid {UP}",
+                 "borderRadius": "6px", "cursor": "pointer", "fontWeight": "700"}
+    return results, "✓  Exposure DD Loaded", btn_style
+
+
 # ── Journal: main table callback ──────────────────────────────
 @callback(
     Output("journal-table",   "children"),
     Output("journal-summary", "children"),
     Input("sort-store",       "data"),
     Input("page-store",       "data"),
+    Input("live-dd-store",    "data"),
 )
-def update_journal(sort_key, page):
+def update_journal(sort_key, page, live_dd_data):
     if page != "journal":
         raise dash.exceptions.PreventUpdate
 
@@ -1198,9 +1299,15 @@ def update_journal(sort_key, page):
         stat_card("Total Commission", f'£{total_comm:.2f}', MUTED),
     ]
 
+    # Merge live DD into df if available
+    if live_dd_data:
+        df["Exposure DD (£)"] = df["Date"].map(
+            lambda d: live_dd_data.get(d, "—")
+        )
+
     # ── Table ──────────────────────────────────────────────────
-    cols = ["Date", "P&L (£)", "Commission (£)", "Net (£)", "Trades",
-            "Win %", "Max Drawdown", "Best (£)", "Worst (£)",
+    cols = ["Date", "P&L (£)", "Net (£)", "Trades",
+            "Win %", "Closed DD (£)", "Exposure DD (£)", "Best (£)", "Worst (£)",
             "Instruments", "First Session", "Sessions"]
 
     th_base = {"fontSize": "9px", "letterSpacing": "1px",
@@ -1224,25 +1331,34 @@ def update_journal(sort_key, page):
     data_rows = []
     for _, row in df.iterrows():
         pnl     = row["P&L (£)"]
-        dd      = row["Max Drawdown"]
+        dd      = row["Closed DD (£)"]
         wr      = row["Win %"]
         pnl_c   = UP if pnl >= 0 else DOWN
-        dd_c    = DOWN if dd < -50 else (MUTED if dd < 0 else UP)
+        dd_c    = DOWN if dd < -50 else (MUTED if dd < 0 else TEXT)
+
+        # Live DD cell
+        live_dd_val = row.get("Exposure DD (£)", "—")
+        if isinstance(live_dd_val, (int, float)):
+            live_dd_str = f'£{live_dd_val:.2f}'
+            live_dd_c   = DOWN if live_dd_val < -50 else (MUTED if live_dd_val < 0 else TEXT)
+        else:
+            live_dd_str = str(live_dd_val)
+            live_dd_c   = MUTED
 
         data_rows.append(html.Tr([
-            html.Td(row["Date"],                      style=td_style(GOLD,  "left")),
+            html.Td(row["Date"],                           style=td_style(GOLD,  "left")),
             html.Td(f'{"+" if pnl>=0 else ""}£{pnl:.2f}', style=td_style(pnl_c)),
-            html.Td(f'£{row["Commission (£)"]:.2f}',  style=td_style(MUTED)),
             html.Td(f'{"+" if row["Net (£)"]>=0 else ""}£{row["Net (£)"]:.2f}',
                     style=td_style(UP if row["Net (£)"]>=0 else DOWN)),
-            html.Td(str(row["Trades"]),               style=td_style()),
-            html.Td(f'{wr:.0f}%',                     style=td_style(UP if wr>=50 else DOWN)),
-            html.Td(f'£{dd:.2f}',                     style=td_style(dd_c)),
-            html.Td(f'+£{row["Best (£)"]:.2f}',       style=td_style(UP)),
-            html.Td(f'£{row["Worst (£)"]:.2f}',       style=td_style(DOWN)),
-            html.Td(row["Instruments"],                style=td_style(TEXT, "left")),
-            html.Td(row["First Session"],              style=td_style(MUTED, "left")),
-            html.Td(row["Sessions"],                   style=td_style(MUTED, "left")),
+            html.Td(str(row["Trades"]),                    style=td_style()),
+            html.Td(f'{wr:.0f}%',                          style=td_style(UP if wr>=50 else DOWN)),
+            html.Td(f'£{dd:.2f}',                          style=td_style(dd_c)),
+            html.Td(live_dd_str,                           style=td_style(live_dd_c)),
+            html.Td(f'+£{row["Best (£)"]:.2f}',            style=td_style(UP)),
+            html.Td(f'£{row["Worst (£)"]:.2f}',            style=td_style(DOWN)),
+            html.Td(row["Instruments"],                    style=td_style(TEXT, "left")),
+            html.Td(row["First Session"],                  style=td_style(MUTED, "left")),
+            html.Td(row["Sessions"],                       style=td_style(MUTED, "left")),
         ]))
 
     table = html.Div(
@@ -1260,12 +1376,15 @@ def update_journal(sort_key, page):
 @callback(
     Output("journal-download", "data"),
     Input("download-btn",      "n_clicks"),
+    dash.dependencies.State("live-dd-store", "data"),
     prevent_initial_call=True,
 )
-def download_csv(_):
+def download_csv(_, live_dd_data):
     df = build_daily_summary()
     if df.empty:
         return None
+    if live_dd_data:
+        df["Live DD (£)"] = df["Date"].map(lambda d: live_dd_data.get(d, "—"))
     return dcc.send_data_frame(df.to_csv, "daily_journal.csv", index=False)
 
 
