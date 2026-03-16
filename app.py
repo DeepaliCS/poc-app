@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import pandas as pd
 import plotly.graph_objects as go
+import dash
 from dash import Dash, html, dcc, callback, Input, Output, State, ctx
 from dotenv import load_dotenv
 
@@ -127,6 +128,7 @@ def header(active_page="overview"):
             nav_btn("📊  Overview",    "nav-overview", active=(active_page=="overview")),
             nav_btn("📅  Daily View",  "nav-daily",    active=(active_page=="daily")),
             nav_btn("🕯  Market View", "nav-market",   active=(active_page=="market")),
+            nav_btn("📋  Journal",     "nav-journal",  active=(active_page=="journal")),
         ]),
     ])
 
@@ -264,6 +266,51 @@ page_market = html.Div(id="page-market", children=[
     dcc.Store(id="ctf-store", data="5m"),
 ])
 
+# ── Page 4: Daily Journal ─────────────────────────────────────
+page_journal = html.Div(id="page-journal", children=[
+    header("journal"),
+
+    # Controls row
+    html.Div(style={"display": "flex", "alignItems": "center", "justifyContent": "space-between",
+                    "marginBottom": "20px"},
+    children=[
+        html.Div(style={"display": "flex", "alignItems": "center", "gap": "16px"},
+        children=[
+            html.Div("Sort:", style={"fontSize": "10px", "color": MUTED,
+                                     "letterSpacing": "2px", "textTransform": "uppercase"}),
+            html.Button("Date ↓",  id="sort-date",  n_clicks=0,
+                        style={"fontSize": "11px", "padding": "5px 12px", "background": GOLD,
+                               "color": BG, "border": f"1px solid {GOLD}",
+                               "borderRadius": "6px", "cursor": "pointer", "fontWeight": "700"}),
+            html.Button("P&L",     id="sort-pnl",   n_clicks=0,
+                        style={"fontSize": "11px", "padding": "5px 12px", "background": CARD,
+                               "color": MUTED, "border": f"1px solid {BORDER}",
+                               "borderRadius": "6px", "cursor": "pointer"}),
+            html.Button("Trades",  id="sort-trades", n_clicks=0,
+                        style={"fontSize": "11px", "padding": "5px 12px", "background": CARD,
+                               "color": MUTED, "border": f"1px solid {BORDER}",
+                               "borderRadius": "6px", "cursor": "pointer"}),
+        ]),
+        html.Button("⬇  Download CSV", id="download-btn", n_clicks=0,
+                    style={"fontSize": "11px", "padding": "7px 18px", "background": CARD,
+                           "color": TEXT, "border": f"1px solid {BORDER}",
+                           "borderRadius": "6px", "cursor": "pointer"}),
+    ]),
+
+    # Summary stats bar
+    html.Div(id="journal-summary",
+             style={"display": "grid", "gridTemplateColumns": "repeat(5,1fr)",
+                    "gap": "12px", "marginBottom": "20px"}),
+
+    # Table
+    html.Div(id="journal-table",
+             style={"background": PANEL, "border": f"1px solid {BORDER}",
+                    "borderRadius": "10px", "padding": "20px"}),
+
+    dcc.Download(id="journal-download"),
+    dcc.Store(id="sort-store", data="date"),
+])
+
 # ── App layout ────────────────────────────────────────────────
 app.layout = html.Div(
     style={"background": BG, "minHeight": "100vh", "padding": "28px",
@@ -280,12 +327,14 @@ app.layout = html.Div(
     Input("nav-overview",  "n_clicks"),
     Input("nav-daily",     "n_clicks"),
     Input("nav-market",    "n_clicks"),
+    Input("nav-journal",   "n_clicks"),
     prevent_initial_call=True,
 )
 def switch_page(*_):
     triggered = ctx.triggered_id
     if triggered == "nav-daily":   return "daily"
     if triggered == "nav-market":  return "market"
+    if triggered == "nav-journal": return "journal"
     return "overview"
 
 @callback(
@@ -293,8 +342,9 @@ def switch_page(*_):
     Input("page-store",    "data"),
 )
 def render_page(page):
-    if page == "daily":  return page_daily
-    if page == "market": return page_market
+    if page == "daily":   return page_daily
+    if page == "market":  return page_market
+    if page == "journal": return page_journal
     return page_overview
 
 # ── Overview: timeframe store ─────────────────────────────────
@@ -567,7 +617,78 @@ def update_ctf_styles(active):
         "fontWeight": "700" if tf["label"] == active else "400",
     } for tf in CANDLE_TFS]
 
-# ── Market view: main chart callback ─────────────────────────
+# ── Trading session definitions (all times in UTC) ───────────
+SESSIONS = [
+    {
+        "name":  "Sydney",
+        "start": 21,  "end": 6,   # 21:00–06:00 UTC (crosses midnight)
+        "color": "rgba(100,160,255,0.07)",
+        "label_color": "rgba(100,160,255,0.7)",
+    },
+    {
+        "name":  "Tokyo",
+        "start": 0,   "end": 9,   # 00:00–09:00 UTC
+        "color": "rgba(255,50,50,0.06)",
+        "label_color": "rgba(255,100,100,0.7)",
+    },
+    {
+        "name":  "London",
+        "start": 8,   "end": 17,  # 08:00–17:00 UTC
+        "color": "rgba(100,220,160,0.07)",
+        "label_color": "rgba(100,220,160,0.7)",
+    },
+    {
+        "name":  "New York",
+        "start": 13,  "end": 22,  # 13:00–22:00 UTC
+        "color": "rgba(255,180,50,0.07)",
+        "label_color": "rgba(255,180,50,0.7)",
+    },
+]
+
+def add_session_boxes(fig, date_utc):
+    """Add shaded session regions to a candlestick figure for a given UTC date."""
+    from datetime import timedelta
+    d = pd.Timestamp(date_utc).normalize().tz_localize("UTC") if pd.Timestamp(date_utc).tzinfo is None else pd.Timestamp(date_utc).normalize()
+
+    for sess in SESSIONS:
+        start_h = sess["start"]
+        end_h   = sess["end"]
+
+        if start_h < end_h:
+            # Same day
+            x0 = d + timedelta(hours=start_h)
+            x1 = d + timedelta(hours=end_h)
+            _add_box(fig, x0, x1, sess)
+        else:
+            # Crosses midnight — two segments: prev day end→midnight, midnight→next day
+            # Segment 1: start_h → end of day
+            x0 = d + timedelta(hours=start_h)
+            x1 = d + timedelta(hours=24)
+            _add_box(fig, x0, x1, sess, show_label=True)
+            # Segment 2: start of next day → end_h
+            x0 = d + timedelta(hours=24)
+            x1 = d + timedelta(hours=24 + end_h)
+            _add_box(fig, x0, x1, sess, show_label=False)
+
+def _add_box(fig, x0, x1, sess, show_label=True):
+    fig.add_vrect(
+        x0=x0, x1=x1,
+        fillcolor=sess["color"],
+        layer="below",
+        line_width=0,
+    )
+    if show_label:
+        fig.add_annotation(
+            x=x0, xanchor="left",
+            y=1.0, yanchor="top", yref="paper",
+            text=sess["name"],
+            showarrow=False,
+            font={"size": 9, "color": sess["label_color"]},
+            bgcolor="rgba(0,0,0,0)",
+            borderpad=2,
+        )
+
+# ── Market view callback ──────────────────────────────────────
 @callback(
     Output("market-charts",      "children"),
     Output("market-day-summary", "children"),
@@ -662,7 +783,8 @@ def update_market(selected_date, tf_label):
             line={"width": 1},
         ))
 
-        # ── Trade overlays ────────────────────────────────────
+        # ── Session boxes ─────────────────────────────────────
+        add_session_boxes(fig, sel_dt)
         # Colours: entry=bright, exit=muted, line=faint
         ENTRY_BUY   = "#00e5ff"   # cyan  — buy entry
         ENTRY_SELL  = "#ff9800"   # amber — sell entry
@@ -931,6 +1053,220 @@ def fetch_candles_sync(symbol_id, from_dt, to_dt, period, minutes):
 
     done_event.wait(timeout=30)
     return state["candles"]
+
+
+# ── Journal: build daily summary dataframe ───────────────────
+def build_daily_summary():
+    """Aggregate all closing trades into per-day rows."""
+    import math
+    df_all  = pd.read_csv(DATA_FILE)
+    df_all["time"] = pd.to_datetime(df_all["time"], format="ISO8601", utc=True)
+    symbols = load_symbols()
+    closing = df_all[df_all["is_closing"] == True].copy()
+    if closing.empty:
+        return pd.DataFrame()
+    closing["date"] = closing["time"].dt.date
+
+    def get_sessions_for_hour(hour):
+        found = []
+        for s in SESSIONS:
+            st, en = s["start"], s["end"]
+            if st < en:
+                if st <= hour < en: found.append(s["name"])
+            else:
+                if hour >= st or hour < en: found.append(s["name"])
+        return found
+
+    rows = []
+    for date, day_df in closing.groupby("date"):
+        day_s      = day_df.sort_values("time")
+        total_pnl  = day_s["pnl"].sum()
+        total_comm = day_s["commission"].sum()
+        n_trades   = len(day_s)
+        wins       = len(day_s[day_s["pnl"] > 0])
+        best       = day_s["pnl"].max()
+        worst      = day_s["pnl"].min()
+
+        # Max drawdown
+        day_s = day_s.copy()
+        day_s["cum_pnl"] = day_s["pnl"].cumsum()
+        running_max = day_s["cum_pnl"].cummax()
+        max_dd      = (day_s["cum_pnl"] - running_max).min()
+
+        # Instruments
+        sym_ids     = day_s["symbol_id"].unique()
+        instruments = ", ".join([symbols.get(str(s), f"ID:{s}") for s in sym_ids])
+
+        # Sessions touched
+        all_hours = set(day_s["time"].dt.hour.tolist())
+        seen_sess = []
+        for h in sorted(all_hours):
+            for s in get_sessions_for_hour(h):
+                if s not in seen_sess: seen_sess.append(s)
+
+        # First trade session
+        first_hour    = day_s["time"].iloc[0].hour
+        first_session = ", ".join(get_sessions_for_hour(first_hour)) or "Off-hours"
+
+        rows.append({
+            "Date":           str(date),
+            "P&L (£)":        round(total_pnl, 2),
+            "Commission (£)": round(total_comm, 2),
+            "Net (£)":        round(total_pnl + total_comm, 2),
+            "Trades":         n_trades,
+            "Wins":           wins,
+            "Win %":          round(wins / n_trades * 100, 1) if n_trades else 0,
+            "Best (£)":       round(best, 2),
+            "Worst (£)":      round(worst, 2),
+            "Max Drawdown":   round(max_dd, 2),
+            "Instruments":    instruments,
+            "First Session":  first_session,
+            "Sessions":       ", ".join(seen_sess),
+        })
+
+    return pd.DataFrame(rows)
+
+
+# ── Journal: sort buttons ─────────────────────────────────────
+@callback(
+    Output("sort-store",  "data"),
+    Output("sort-date",   "style"),
+    Output("sort-pnl",    "style"),
+    Output("sort-trades", "style"),
+    Input("sort-date",    "n_clicks"),
+    Input("sort-pnl",     "n_clicks"),
+    Input("sort-trades",  "n_clicks"),
+    prevent_initial_call=True,
+)
+def set_sort(*_):
+    triggered = ctx.triggered_id
+    sort_key  = {"sort-date": "date", "sort-pnl": "pnl",
+                 "sort-trades": "trades"}.get(triggered, "date")
+
+    def btn_style(active):
+        return {"fontSize": "11px", "padding": "5px 12px",
+                "background": GOLD if active else CARD,
+                "color": BG if active else MUTED,
+                "border": f"1px solid {GOLD if active else BORDER}",
+                "borderRadius": "6px", "cursor": "pointer",
+                "fontWeight": "700" if active else "400"}
+
+    return (sort_key,
+            btn_style(sort_key == "date"),
+            btn_style(sort_key == "pnl"),
+            btn_style(sort_key == "trades"))
+
+
+# ── Journal: main table callback ──────────────────────────────
+@callback(
+    Output("journal-table",   "children"),
+    Output("journal-summary", "children"),
+    Input("sort-store",       "data"),
+    Input("page-store",       "data"),
+)
+def update_journal(sort_key, page):
+    if page != "journal":
+        raise dash.exceptions.PreventUpdate
+
+    df = build_daily_summary()
+    if df.empty:
+        return html.Div("No data.", style={"color": MUTED}), []
+
+    # Sort
+    col_map = {"date": "Date", "pnl": "P&L (£)", "trades": "Trades"}
+    sort_col = col_map.get(sort_key, "Date")
+    df = df.sort_values(sort_col, ascending=(sort_key == "date"),
+                        key=(lambda x: pd.to_datetime(x) if sort_key == "date" else x)
+                        ).reset_index(drop=True)
+
+    # ── Summary cards ─────────────────────────────────────────
+    total_pnl    = df["P&L (£)"].sum()
+    total_comm   = df["Commission (£)"].sum()
+    trading_days = len(df)
+    win_days     = len(df[df["P&L (£)"] > 0])
+    avg_daily    = df["P&L (£)"].mean()
+
+    summary_cards = [
+        stat_card("Total P&L",    f'{"+" if total_pnl>=0 else ""}£{total_pnl:.2f}',
+                  UP if total_pnl >= 0 else DOWN),
+        stat_card("Trading Days", str(trading_days), TEXT,
+                  f"{win_days} profitable"),
+        stat_card("Day Win Rate", f'{win_days/trading_days*100:.0f}%',
+                  UP if win_days/trading_days >= 0.5 else DOWN),
+        stat_card("Avg Daily P&L",f'{"+" if avg_daily>=0 else ""}£{avg_daily:.2f}',
+                  UP if avg_daily >= 0 else DOWN),
+        stat_card("Total Commission", f'£{total_comm:.2f}', MUTED),
+    ]
+
+    # ── Table ──────────────────────────────────────────────────
+    cols = ["Date", "P&L (£)", "Commission (£)", "Net (£)", "Trades",
+            "Win %", "Max Drawdown", "Best (£)", "Worst (£)",
+            "Instruments", "First Session", "Sessions"]
+
+    th_base = {"fontSize": "9px", "letterSpacing": "1px",
+               "textTransform": "uppercase", "color": MUTED,
+               "padding": "10px 14px", "background": CARD,
+               "borderBottom": f"1px solid {BORDER}",
+               "textAlign": "right", "whiteSpace": "nowrap"}
+    th_left = {**th_base, "textAlign": "left"}
+
+    def td_style(color=TEXT, align="right"):
+        return {"fontSize": "11px", "color": color, "padding": "9px 14px",
+                "textAlign": align, "borderBottom": f"1px solid {BORDER}",
+                "whiteSpace": "nowrap"}
+
+    header_row = html.Tr([
+        html.Th(c, style=th_left if c in ["Date","Instruments","Sessions","First Session"]
+                else th_base)
+        for c in cols
+    ])
+
+    data_rows = []
+    for _, row in df.iterrows():
+        pnl     = row["P&L (£)"]
+        dd      = row["Max Drawdown"]
+        wr      = row["Win %"]
+        pnl_c   = UP if pnl >= 0 else DOWN
+        dd_c    = DOWN if dd < -50 else (MUTED if dd < 0 else UP)
+
+        data_rows.append(html.Tr([
+            html.Td(row["Date"],                      style=td_style(GOLD,  "left")),
+            html.Td(f'{"+" if pnl>=0 else ""}£{pnl:.2f}', style=td_style(pnl_c)),
+            html.Td(f'£{row["Commission (£)"]:.2f}',  style=td_style(MUTED)),
+            html.Td(f'{"+" if row["Net (£)"]>=0 else ""}£{row["Net (£)"]:.2f}',
+                    style=td_style(UP if row["Net (£)"]>=0 else DOWN)),
+            html.Td(str(row["Trades"]),               style=td_style()),
+            html.Td(f'{wr:.0f}%',                     style=td_style(UP if wr>=50 else DOWN)),
+            html.Td(f'£{dd:.2f}',                     style=td_style(dd_c)),
+            html.Td(f'+£{row["Best (£)"]:.2f}',       style=td_style(UP)),
+            html.Td(f'£{row["Worst (£)"]:.2f}',       style=td_style(DOWN)),
+            html.Td(row["Instruments"],                style=td_style(TEXT, "left")),
+            html.Td(row["First Session"],              style=td_style(MUTED, "left")),
+            html.Td(row["Sessions"],                   style=td_style(MUTED, "left")),
+        ]))
+
+    table = html.Div(
+        html.Table(
+            [html.Thead(header_row), html.Tbody(data_rows)],
+            style={"width": "100%", "borderCollapse": "collapse"},
+        ),
+        style={"overflowX": "auto"},
+    )
+
+    return table, summary_cards
+
+
+# ── Journal: CSV download ─────────────────────────────────────
+@callback(
+    Output("journal-download", "data"),
+    Input("download-btn",      "n_clicks"),
+    prevent_initial_call=True,
+)
+def download_csv(_):
+    df = build_daily_summary()
+    if df.empty:
+        return None
+    return dcc.send_data_frame(df.to_csv, "daily_journal.csv", index=False)
 
 
 if __name__ == "__main__":
