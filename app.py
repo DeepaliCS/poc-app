@@ -358,24 +358,32 @@ page_scenarios = html.Div(id="page-scenarios", children=[
              style={"display": "flex", "gap": "12px", "flexWrap": "wrap",
                     "marginBottom": "20px"}),
 
-    # Market chart — only loads when button clicked
-    html.Div([
-        html.Div(id="sc-chart-title",
-                 style={"fontSize": "9px", "letterSpacing": "2px",
-                        "textTransform": "uppercase", "color": MUTED,
-                        "marginBottom": "12px"}),
-        dcc.Loading(type="circle", color=GOLD, children=
-            html.Div(id="sc-market-chart-wrap")
-        ),
-    ], style={"background": PANEL, "border": f"1px solid {BORDER}",
-              "borderRadius": "10px", "padding": "20px", "marginBottom": "16px"}),
-
     # Scenarios table
     html.Div([
         html.Div("Scenario log", style={"fontSize": "9px", "letterSpacing": "2px",
                                          "textTransform": "uppercase", "color": MUTED,
                                          "marginBottom": "12px"}),
         html.Div(id="sc-table"),
+    ], style={"background": PANEL, "border": f"1px solid {BORDER}",
+              "borderRadius": "10px", "padding": "20px", "marginBottom": "16px"}),
+
+    # Market chart — loads when button clicked
+    html.Div([
+        html.Div(style={"display": "flex", "justifyContent": "space-between",
+                        "alignItems": "center", "marginBottom": "12px"},
+        children=[
+            html.Div(id="sc-chart-title",
+                     style={"fontSize": "9px", "letterSpacing": "2px",
+                            "textTransform": "uppercase", "color": MUTED}),
+        ]),
+        dcc.Loading(type="circle", color=GOLD, children=
+            html.Div(id="sc-market-chart-wrap",
+                     children=html.Div(
+                         "Click  🕯 Load Chart  above to overlay your trades on the market",
+                         style={"color": MUTED, "fontSize": "12px",
+                                "padding": "40px", "textAlign": "center"}
+                     ))
+        ),
     ], style={"background": PANEL, "border": f"1px solid {BORDER}",
               "borderRadius": "10px", "padding": "20px"}),
 
@@ -1670,12 +1678,18 @@ def update_scenario_table(selected_date, page):
     Output("sc-chart-title",       "children"),
     Output("sc-chart-btn",         "style"),
     Input("sc-chart-btn",          "n_clicks"),
-    dash.dependencies.State("sc-date-picker", "date"),
+    Input("sc-date-picker",        "date"),
+    dash.dependencies.State("page-store", "data"),
     prevent_initial_call=True,
 )
-def load_scenario_chart(n_clicks, selected_date):
+def load_scenario_chart(n_clicks, selected_date, page):
+    if page != "scenarios":
+        raise dash.exceptions.PreventUpdate
+    # Only fetch chart if button was clicked OR if date changed after button was used
+    if ctx.triggered_id == "sc-date-picker" and (n_clicks == 0):
+        raise dash.exceptions.PreventUpdate
     if not selected_date:
-        return html.Div(), "", {}
+        raise dash.exceptions.PreventUpdate
 
     df_sc   = build_scenarios(selected_date)
     symbols = load_symbols()
