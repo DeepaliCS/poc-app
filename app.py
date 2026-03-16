@@ -22,7 +22,7 @@ CARD   = "#161616"
 BORDER = "#222222"
 TEXT   = "#e0e0e0"
 MUTED  = "#555555"
-GOLD   = "#f0b429"
+GOLD   = "#7eb8f7"
 UP     = "#26a69a"
 DOWN   = "#ef5350"
 
@@ -119,15 +119,14 @@ def header(active_page="overview"):
         "paddingBottom": "20px", "borderBottom": f"1px solid {BORDER}"},
     children=[
         html.Div([
-            html.Span(SYMBOL, style={"fontSize": "22px", "fontWeight": "800",
+            html.Span("TRADING JOURNAL", style={"fontSize": "22px", "fontWeight": "800",
                                       "color": GOLD, "letterSpacing": "2px"}),
-            html.Span("  TRADE HISTORY",
+            html.Span("  GOLD & METALS  ·  DEEPALI",
                       style={"fontSize": "10px", "color": MUTED, "letterSpacing": "3px"}),
         ]),
         html.Div(style={"display": "flex", "gap": "8px"}, children=[
             nav_btn("📊  Overview",    "nav-overview", active=(active_page=="overview")),
             nav_btn("📅  Daily View",  "nav-daily",    active=(active_page=="daily")),
-            nav_btn("🕯  Market View", "nav-market",   active=(active_page=="market")),
             nav_btn("📋  Journal",     "nav-journal",  active=(active_page=="journal")),
             nav_btn("🔍  Scenarios",   "nav-scenarios",active=(active_page=="scenarios")),
         ]),
@@ -214,57 +213,6 @@ page_daily = html.Div(id="page-daily", children=[
     ]),
 
     html.Div(id="daily-charts"),
-])
-
-# ── Page 3: Market View ───────────────────────────────────────
-CANDLE_TFS = [
-    {"label": "5m",  "minutes": 5,   "period": 5},
-    {"label": "15m", "minutes": 15,  "period": 6},
-    {"label": "1h",  "minutes": 60,  "period": 8},
-]
-
-page_market = html.Div(id="page-market", children=[
-    header("market"),
-
-    # Controls row
-    html.Div(style={"display": "flex", "alignItems": "center", "gap": "16px",
-                    "marginBottom": "24px", "background": PANEL,
-                    "border": f"1px solid {BORDER}",
-                    "borderRadius": "10px", "padding": "16px 20px"},
-    children=[
-        html.Div("Date:", style={"fontSize": "10px", "color": MUTED,
-                                  "letterSpacing": "2px", "textTransform": "uppercase"}),
-        dcc.DatePickerSingle(
-            id="market-date-picker",
-            date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            display_format="DD MMM YYYY",
-        ),
-        html.Div("Timeframe:", style={"fontSize": "10px", "color": MUTED,
-                                       "letterSpacing": "2px", "textTransform": "uppercase",
-                                       "marginLeft": "16px"}),
-        html.Div(style={"display": "flex", "gap": "6px"}, children=[
-            html.Button(tf["label"], id=f"ctf-{tf['label']}", n_clicks=0,
-                        style={"fontSize": "11px", "padding": "5px 12px",
-                               "background": GOLD if tf["label"] == "5m" else CARD,
-                               "color": BG if tf["label"] == "5m" else MUTED,
-                               "border": f"1px solid {GOLD if tf['label'] == '5m' else BORDER}",
-                               "borderRadius": "6px", "cursor": "pointer",
-                               "fontWeight": "700" if tf["label"] == "5m" else "400"})
-            for tf in CANDLE_TFS
-        ]),
-        html.Div(id="market-day-summary",
-                 style={"fontSize": "11px", "color": MUTED, "marginLeft": "auto"}),
-    ]),
-
-    # Loading indicator + charts
-    dcc.Loading(
-        id="market-loading",
-        type="circle",
-        color=GOLD,
-        children=html.Div(id="market-charts"),
-    ),
-
-    dcc.Store(id="ctf-store", data="5m"),
 ])
 
 # ── Page 4: Daily Journal ─────────────────────────────────────
@@ -406,7 +354,6 @@ app.layout = html.Div(
     Output("page-store",    "data"),
     Input("nav-overview",   "n_clicks"),
     Input("nav-daily",      "n_clicks"),
-    Input("nav-market",     "n_clicks"),
     Input("nav-journal",    "n_clicks"),
     Input("nav-scenarios",  "n_clicks"),
     prevent_initial_call=True,
@@ -414,7 +361,6 @@ app.layout = html.Div(
 def switch_page(*_):
     triggered = ctx.triggered_id
     if triggered == "nav-daily":     return "daily"
-    if triggered == "nav-market":    return "market"
     if triggered == "nav-journal":   return "journal"
     if triggered == "nav-scenarios": return "scenarios"
     return "overview"
@@ -425,7 +371,6 @@ def switch_page(*_):
 )
 def render_page(page):
     if page == "daily":     return page_daily
-    if page == "market":    return page_market
     if page == "journal":   return page_journal
     if page == "scenarios": return page_scenarios
     return page_overview
@@ -678,28 +623,6 @@ def update_daily(selected_date):
 
 
 # ── Market view: timeframe store ─────────────────────────────
-@callback(
-    Output("ctf-store", "data"),
-    *[Input(f"ctf-{tf['label']}", "n_clicks") for tf in CANDLE_TFS],
-    prevent_initial_call=True,
-)
-def set_ctf(*_):
-    return ctx.triggered_id.replace("ctf-", "") if ctx.triggered_id else "5m"
-
-@callback(
-    *[Output(f"ctf-{tf['label']}", "style") for tf in CANDLE_TFS],
-    Input("ctf-store", "data"),
-)
-def update_ctf_styles(active):
-    return [{
-        "fontSize": "11px", "padding": "5px 12px",
-        "background": GOLD if tf["label"] == active else CARD,
-        "color": BG if tf["label"] == active else MUTED,
-        "border": f"1px solid {GOLD if tf['label'] == active else BORDER}",
-        "borderRadius": "6px", "cursor": "pointer",
-        "fontWeight": "700" if tf["label"] == active else "400",
-    } for tf in CANDLE_TFS]
-
 # ── Trading session definitions (all times in UTC) ───────────
 SESSIONS = [
     {
@@ -770,228 +693,6 @@ def _add_box(fig, x0, x1, sess, show_label=True):
             bgcolor="rgba(0,0,0,0)",
             borderpad=2,
         )
-
-# ── Market view callback ──────────────────────────────────────
-@callback(
-    Output("market-charts",      "children"),
-    Output("market-day-summary", "children"),
-    Input("market-date-picker",  "date"),
-    Input("ctf-store",           "data"),
-)
-def update_market(selected_date, tf_label):
-    if not selected_date:
-        return html.Div("Pick a date.", style={"color": MUTED}), ""
-
-    df_all  = load_trades()
-    symbols = load_symbols()
-    if df_all is None:
-        return html.Div("No trade data.", style={"color": MUTED}), ""
-
-    sel_dt  = pd.to_datetime(selected_date).tz_localize("UTC")
-    sel_end = sel_dt + timedelta(days=1)
-    df_day  = df_all[(df_all["time"] >= sel_dt) & (df_all["time"] < sel_end)].copy()
-
-    if df_day.empty:
-        return html.Div([
-            html.Div("📭  No trades on this day.",
-                     style={"color": MUTED, "fontSize": "14px",
-                            "padding": "40px", "textAlign": "center"}),
-        ]), "No trades this day"
-
-    tf_info   = next((t for t in CANDLE_TFS if t["label"] == tf_label), CANDLE_TFS[0])
-    period    = tf_info["period"]
-    minutes   = tf_info["minutes"]
-
-    # Fetch candles from cTrader for each symbol traded that day
-    charts = []
-    total_pnl = df_day["pnl"].sum()
-    sym_ids   = df_day["symbol_id"].unique()
-
-    summary = (f"{len(df_day)} trades  ·  "
-               f'{"+" if total_pnl>=0 else ""}£{total_pnl:.2f}  ·  '
-               f"{len(sym_ids)} symbol(s)  ·  {tf_label} candles")
-
-    # Load ALL deals for the day (opening + closing) to show entries and exits
-    df_all_raw = pd.read_csv(DATA_FILE)
-    df_all_raw["time"] = pd.to_datetime(df_all_raw["time"], format="ISO8601", utc=True)
-    df_day_all = df_all_raw[
-        (df_all_raw["time"] >= sel_dt) & (df_all_raw["time"] < sel_end)
-    ].copy()
-
-    for sym_id in sym_ids:
-        df_sym_all  = df_day_all[df_day_all["symbol_id"] == sym_id].copy()
-        df_sym_open = df_sym_all[df_sym_all["is_closing"] == False]
-        df_sym_cls  = df_sym_all[df_sym_all["is_closing"] == True]
-        sym_name    = get_symbol_name(sym_id, symbols)
-        sym_pnl     = df_sym_cls["pnl"].sum()
-
-        # Build matched trades: open → close via position_id
-        positions = []
-        for _, close in df_sym_cls.iterrows():
-            pos_id = close["position_id"]
-            opens  = df_sym_open[df_sym_open["position_id"] == pos_id]
-            entry  = opens.iloc[0] if not opens.empty else None
-            positions.append({"entry": entry, "exit": close})
-
-        # Fetch OHLCV from cTrader
-        candles = fetch_candles_sync(sym_id, sel_dt, sel_end, period, minutes)
-
-        if candles is None or candles.empty:
-            charts.append(html.Div([
-                html.Div(style={"display": "flex", "justifyContent": "space-between",
-                                "marginBottom": "12px"},
-                children=[
-                    html.Span(sym_name, style={"fontSize": "16px", "fontWeight": "800",
-                                               "color": GOLD}),
-                    html.Span(f'{"+" if sym_pnl>=0 else ""}£{sym_pnl:.2f}',
-                              style={"fontSize": "16px", "fontWeight": "800",
-                                     "color": UP if sym_pnl>=0 else DOWN}),
-                ]),
-                html.Div(f"Could not fetch {tf_label} candles for {sym_name}.",
-                         style={"color": MUTED, "fontSize": "12px", "padding": "20px 0"}),
-            ], style={"background": PANEL, "border": f"1px solid {BORDER}",
-                      "borderRadius": "10px", "padding": "20px", "marginBottom": "16px"}))
-            continue
-
-        fig = go.Figure()
-
-        # ── Candlestick ───────────────────────────────────────
-        fig.add_trace(go.Candlestick(
-            x=candles["time"],
-            open=candles["open"], high=candles["high"],
-            low=candles["low"],   close=candles["close"],
-            name=sym_name,
-            increasing_line_color=UP,   increasing_fillcolor=UP,
-            decreasing_line_color=DOWN, decreasing_fillcolor=DOWN,
-            line={"width": 1},
-        ))
-
-        # ── Session boxes ─────────────────────────────────────
-        add_session_boxes(fig, sel_dt)
-        # Colours: entry=bright, exit=muted, line=faint
-        ENTRY_BUY   = "#00e5ff"   # cyan  — buy entry
-        ENTRY_SELL  = "#ff9800"   # amber — sell entry
-        EXIT_COLOR  = "#ffffff"   # white — all exits
-        WIN_LINE    = "rgba(38,166,154,0.4)"   # green tint
-        LOSS_LINE   = "rgba(239,83,80,0.4)"    # red tint
-
-        legend_added = set()
-
-        for pos in positions:
-            entry = pos["entry"]
-            exit_ = pos["exit"]
-            pnl   = exit_["pnl"]
-            is_win = pnl >= 0
-
-            # Entry arrow (if we have the opening deal)
-            if entry is not None:
-                is_buy    = entry["direction"] == "BUY"
-                ent_color = ENTRY_BUY if is_buy else ENTRY_SELL
-                ent_sym   = "triangle-up" if is_buy else "triangle-down"
-                ent_label = "▲ BUY" if is_buy else "▼ SELL"
-                leg_key   = ent_label
-                fig.add_trace(go.Scatter(
-                    x=[entry["time"]],
-                    y=[entry["fill_price"]],
-                    mode="markers+text",
-                    marker={"symbol": ent_sym, "size": 14, "color": ent_color,
-                            "line": {"color": BG, "width": 1.5}},
-                    text=[" ENTRY"],
-                    textposition="top right" if is_buy else "bottom right",
-                    textfont={"size": 8, "color": ent_color},
-                    name=ent_label,
-                    legendgroup=ent_label,
-                    showlegend=(leg_key not in legend_added),
-                    hovertemplate=(
-                        f"<b>ENTRY {entry['direction']}</b><br>"
-                        f"Price: {entry['fill_price']:.2f}<br>"
-                        f"Volume: {entry['volume']:.2f}<br>"
-                        f"Time: %{{x|%H:%M}}<extra></extra>"
-                    ),
-                ))
-                legend_added.add(leg_key)
-
-                # Connecting line: entry → exit
-                line_color = WIN_LINE if is_win else LOSS_LINE
-                fig.add_trace(go.Scatter(
-                    x=[entry["time"], exit_["time"]],
-                    y=[entry["fill_price"], exit_["fill_price"]],
-                    mode="lines",
-                    line={"color": line_color, "width": 1.5, "dash": "dot"},
-                    showlegend=False,
-                    hoverinfo="skip",
-                ))
-
-            # Exit arrow
-            pnl_str  = f'{"+" if pnl>=0 else ""}£{pnl:.2f}'
-            ex_dir   = exit_["direction"]
-            ex_sym   = "triangle-up" if ex_dir == "BUY" else "triangle-down"
-            ex_label = "✕ EXIT"
-            fig.add_trace(go.Scatter(
-                x=[exit_["time"]],
-                y=[exit_["fill_price"]],
-                mode="markers+text",
-                marker={"symbol": "x", "size": 10, "color": UP if is_win else DOWN,
-                        "line": {"color": BG, "width": 1}},
-                text=[f" {pnl_str}"],
-                textposition="top right" if ex_dir == "SELL" else "bottom right",
-                textfont={"size": 8, "color": UP if is_win else DOWN},
-                name=ex_label,
-                legendgroup=ex_label,
-                showlegend=(ex_label not in legend_added),
-                hovertemplate=(
-                    f"<b>EXIT {ex_dir}</b><br>"
-                    f"Price: {exit_['fill_price']:.2f}<br>"
-                    f"P&L: {pnl_str}<br>"
-                    f"Time: %{{x|%H:%M}}<extra></extra>"
-                ),
-            ))
-            legend_added.add(ex_label)
-
-        fig.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=PANEL,
-            font={"family": "monospace", "color": TEXT, "size": 11},
-            margin={"t": 10, "r": 40, "b": 40, "l": 10},
-            height=380,
-            xaxis={
-                "gridcolor": BORDER, "zerolinecolor": BORDER,
-                "tickfont": {"color": MUTED},
-                "rangeslider": {"visible": False},
-                "type": "date",
-            },
-            yaxis={
-                "gridcolor": BORDER, "zerolinecolor": BORDER,
-                "tickfont": {"color": MUTED}, "side": "right",
-            },
-            legend={"bgcolor": "rgba(0,0,0,0)", "font": {"color": MUTED, "size": 10},
-                    "orientation": "h", "x": 0, "y": 1.05},
-            hovermode="x unified",
-            hoverlabel={"bgcolor": CARD, "font": {"color": TEXT, "family": "monospace"}},
-        )
-
-        n_open  = len(df_sym_open)
-        n_close = len(df_sym_cls)
-        charts.append(html.Div([
-            html.Div(style={"display": "flex", "justifyContent": "space-between",
-                            "alignItems": "center", "marginBottom": "12px"},
-            children=[
-                html.Div([
-                    html.Span(sym_name, style={"fontSize": "16px", "fontWeight": "800",
-                                               "color": GOLD}),
-                    html.Span(f"  {tf_label}  ·  {n_open} entries  ·  {n_close} exits",
-                              style={"fontSize": "10px", "color": MUTED, "marginLeft": "8px"}),
-                ]),
-                html.Div(f'{"+" if sym_pnl>=0 else ""}£{sym_pnl:.2f}',
-                         style={"fontSize": "18px", "fontWeight": "800",
-                                "color": UP if sym_pnl>=0 else DOWN}),
-            ]),
-            dcc.Graph(figure=fig, config={"displayModeBar": True,
-                                           "modeBarButtonsToRemove": ["lasso2d","select2d"],
-                                           "displaylogo": False}),
-        ], style={"background": PANEL, "border": f"1px solid {BORDER}",
-                  "borderRadius": "10px", "padding": "20px", "marginBottom": "16px"}))
-
-    return html.Div(charts), summary
 
 
 _DIGITS_CACHE = {}
