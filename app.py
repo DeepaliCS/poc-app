@@ -1399,125 +1399,171 @@ def load_scenario_chart(n_clicks, selected_date, page):
         return html.Div("No scenarios to chart.",
                         style={"color": MUTED, "padding": "20px"}), "", {}
 
-    # Primary symbol = most traded
-    sym_counts = {}
-    for _, row in df_sc.iterrows():
-        for s in row["_sym_ids"]:
-            sym_counts[s] = sym_counts.get(s, 0) + 1
-    primary_sym = max(sym_counts, key=sym_counts.get)
-
     sel_dt  = pd.Timestamp(selected_date).tz_localize("UTC")
     sel_end = sel_dt + timedelta(days=1)
 
-    candles = fetch_candles_sync(primary_sym, sel_dt, sel_end, period=5, minutes=5)
+    # All unique symbols traded that day across all scenarios
+    all_sym_ids = []
+    for _, row in df_sc.iterrows():
+        for s in row["_sym_ids"]:
+            if s not in all_sym_ids:
+                all_sym_ids.append(s)
 
-    # Load all deals for markers
+    # Load all raw deals for the day once
     df_raw = pd.read_csv(DATA_FILE)
     df_raw["time"] = pd.to_datetime(df_raw["time"], format="ISO8601", utc=True)
-    day_raw  = df_raw[(df_raw["time"]>=sel_dt)&(df_raw["time"]<sel_end)&
-                      (df_raw["symbol_id"]==primary_sym)].copy()
-    openings_raw = day_raw[day_raw["is_closing"]==False]
-    closings_raw = day_raw[day_raw["is_closing"]==True].sort_values("time").copy()
+    day_raw_all = df_raw[
+        (df_raw["time"] >= sel_dt) & (df_raw["time"] < sel_end)
+    ].copy()
 
-    if not closings_raw.empty:
-        gaps = closings_raw["time"].diff().dt.total_seconds().fillna(9999)/60
-        closings_raw["scenario"] = (gaps > 10).cumsum() + 1
+    # Build one chart per symbol, stacked
+    chart_components = []
 
-    fig = go.Figure()
+    for sym_id in all_sym_ids:
+        sym_name     = symbols.get(str(sym_id), str(sym_id))
+        candles      = fetch_candles_sync(sym_id, sel_dt, sel_end, period=5, minutes=5)
 
-    if candles is not None and not candles.empty:
-        fig.add_trace(go.Candlestick(
-            x=candles["time"],
-            open=candles["open"], high=candles["high"],
-            low=candles["low"],   close=candles["close"],
-            name=symbols.get(str(primary_sym), str(primary_sym)),
-            increasing_line_color=UP, increasing_fillcolor=UP,
-            decreasing_line_color=DOWN, decreasing_fillcolor=DOWN,
-            line={"width":1},
-        ))
-        add_session_boxes(fig, sel_dt)
+        day_raw      = day_raw_all[day_raw_all["symbol_id"] == sym_id].copy()
+        openings_raw = day_raw[day_raw["is_closing"] == False]
+        closings_raw = day_raw[day_raw["is_closing"] == True].sort_values("time").copy()
 
-    legend_added = set()
-    for i, (_, sc_row) in enumerate(df_sc.iterrows()):
-        sc_num = sc_row["Scenario"]
-        color  = SC_COLOURS[i % len(SC_COLOURS)]
-        r,g,b  = int(color[1:3],16),int(color[3:5],16),int(color[5:7],16)
+        # Assign scenario numbers by matching each close time to its scenario window
+        if not closings_raw.empty:
+            def assign_scenario(close_time):
+                for _, sc in df_sc.iterrows():
+                    if sc["_first_entry"] <= close_time <= sc["_last_exit"]:
+                        return sc["Scenario"]
+                return -1
+            closings_raw = closings_raw.copy()
+            closings_raw["scenario"] = closings_raw["time"].apply(assign_scenario)
 
-        fig.add_vrect(x0=sc_row["_first_entry"], x1=sc_row["_last_exit"],
-                      fillcolor=f"rgba({r},{g},{b},0.08)", layer="below", line_width=0)
-        fig.add_annotation(
-            x=sc_row["_first_entry"], xanchor="left",
-            y=0.97, yanchor="top", yref="paper",
-            text=f"S{sc_num}", showarrow=False,
-            font={"size":9,"color":color}, bgcolor="rgba(0,0,0,0)",
+        # Only scenarios that include this symbol
+        sc_for_sym = df_sc[df_sc["_sym_ids"].apply(lambda ids: sym_id in ids)]
+        if sc_for_sym.empty and closings_raw.empty:
+            continue
+
+        sym_pnl = closings_raw["pnl"].sum() if not closings_raw.empty else 0
+
+        fig = go.Figure()
+
+        if candles is not None and not candles.empty:
+            fig.add_trace(go.Candlestick(
+                x=candles["time"],
+                open=candles["open"], high=candles["high"],
+                low=candles["low"],   close=candles["close"],
+                name=sym_name,
+                increasing_line_color=UP, increasing_fillcolor=UP,
+                decreasing_line_color=DOWN, decreasing_fillcolor=DOWN,
+                line={"width": 1},
+            ))
+            add_session_boxes(fig, sel_dt)
+
+        legend_added = set()
+        for i, (_, sc_row) in enumerate(df_sc.iterrows()):
+            sc_num = sc_row["Scenario"]
+            color  = SC_COLOURS[i % len(SC_COLOURS)]
+            r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+
+            # Only shade vrect if this scenario involves this symbol
+            if sym_id not in sc_row["_sym_ids"]:
+                continue
+
+            fig.add_vrect(
+                x0=sc_row["_first_entry"], x1=sc_row["_last_exit"],
+                fillcolor=f"rgba({r},{g},{b},0.08)", layer="below", line_width=0
+            )
+            fig.add_annotation(
+                x=sc_row["_first_entry"], xanchor="left",
+                y=0.97, yanchor="top", yref="paper",
+                text=f"S{sc_num}", showarrow=False,
+                font={"size": 9, "color": color}, bgcolor="rgba(0,0,0,0)",
+            )
+
+            sc_cls = closings_raw[closings_raw["scenario"] == sc_num] if not closings_raw.empty else pd.DataFrame()
+            for _, trade in sc_cls.iterrows():
+                op     = openings_raw[openings_raw["position_id"] == trade["position_id"]]
+                is_buy = op.iloc[0]["direction"] == "BUY" if not op.empty else True
+                pnl    = trade["pnl"]
+
+                if not op.empty:
+                    lk = f"e{sc_num}_{sym_id}"
+                    fig.add_trace(go.Scatter(
+                        x=[op.iloc[0]["time"]], y=[op.iloc[0]["fill_price"]],
+                        mode="markers",
+                        marker={"symbol": "triangle-up" if is_buy else "triangle-down",
+                                "size": 10, "color": color,
+                                "line": {"color": BG, "width": 1}},
+                        name=f"S{sc_num}", legendgroup=f"s{sc_num}",
+                        showlegend=(lk not in legend_added),
+                        hovertemplate=(f"S{sc_num} ENTRY {'BUY' if is_buy else 'SELL'}<br>"
+                                       f"Price: {op.iloc[0]['fill_price']:.2f}<br>"
+                                       f"Time: %{{x|%H:%M:%S}}<extra></extra>"),
+                    ))
+                    legend_added.add(lk)
+                    fig.add_trace(go.Scatter(
+                        x=[op.iloc[0]["time"], trade["time"]],
+                        y=[op.iloc[0]["fill_price"], trade["fill_price"]],
+                        mode="lines",
+                        line={"color": color, "width": 1,
+                              "dash": "dot" if pnl < 0 else "solid"},
+                        showlegend=False, hoverinfo="skip", opacity=0.4,
+                    ))
+
+                fig.add_trace(go.Scatter(
+                    x=[trade["time"]], y=[trade["fill_price"]],
+                    mode="markers",
+                    marker={"symbol": "x", "size": 8,
+                            "color": UP if pnl >= 0 else DOWN,
+                            "line": {"color": BG, "width": 1}},
+                    name=f"S{sc_num} exit", legendgroup=f"s{sc_num}",
+                    showlegend=False,
+                    hovertemplate=(f"S{sc_num} EXIT<br>Price: {trade['fill_price']:.2f}<br>"
+                                   f'P&L: {"+" if pnl>=0 else ""}£{pnl:.2f}<extra></extra>'),
+                ))
+
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=PANEL,
+            font={"family": "monospace", "color": TEXT, "size": 11},
+            margin={"t": 10, "r": 40, "b": 40, "l": 10}, height=360,
+            xaxis={"gridcolor": BORDER, "zerolinecolor": BORDER,
+                   "tickfont": {"color": MUTED},
+                   "rangeslider": {"visible": False}, "type": "date"},
+            yaxis={"gridcolor": BORDER, "zerolinecolor": BORDER,
+                   "tickfont": {"color": MUTED}, "side": "right"},
+            legend={"bgcolor": "rgba(0,0,0,0)", "font": {"color": MUTED, "size": 10},
+                    "orientation": "h", "x": 0, "y": 1.08},
+            hovermode="x unified",
+            hoverlabel={"bgcolor": CARD, "font": {"color": TEXT, "family": "monospace"}},
         )
 
-        sc_cls = closings_raw[closings_raw["scenario"]==sc_num] if not closings_raw.empty else pd.DataFrame()
-        for _, trade in sc_cls.iterrows():
-            op = openings_raw[openings_raw["position_id"]==trade["position_id"]]
-            is_buy = op.iloc[0]["direction"]=="BUY" if not op.empty else True
-            pnl    = trade["pnl"]
+        pnl_str = f'{"+" if sym_pnl>=0 else ""}£{sym_pnl:.2f}'
+        chart_components.append(html.Div([
+            html.Div(style={"display": "flex", "justifyContent": "space-between",
+                            "alignItems": "center", "marginBottom": "10px"},
+            children=[
+                html.Span(sym_name, style={"fontSize": "14px", "fontWeight": "800",
+                                            "color": GOLD}),
+                html.Span(pnl_str, style={"fontSize": "14px", "fontWeight": "700",
+                                           "color": UP if sym_pnl >= 0 else DOWN}),
+            ]),
+            dcc.Graph(figure=fig,
+                      config={"displayModeBar": True,
+                               "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+                               "displaylogo": False},
+                      style={"height": "360px"}),
+        ], style={"marginBottom": "16px"}))
 
-            if not op.empty:
-                lk = f"e{sc_num}"
-                fig.add_trace(go.Scatter(
-                    x=[op.iloc[0]["time"]], y=[op.iloc[0]["fill_price"]],
-                    mode="markers",
-                    marker={"symbol":"triangle-up" if is_buy else "triangle-down",
-                            "size":10,"color":color,"line":{"color":BG,"width":1}},
-                    name=f"S{sc_num}", legendgroup=f"s{sc_num}",
-                    showlegend=(lk not in legend_added),
-                    hovertemplate=(f"S{sc_num} ENTRY {'BUY' if is_buy else 'SELL'}<br>"
-                                   f"Price: {op.iloc[0]['fill_price']:.2f}<br>"
-                                   f"Time: %{{x|%H:%M:%S}}<extra></extra>"),
-                ))
-                legend_added.add(lk)
-                fig.add_trace(go.Scatter(
-                    x=[op.iloc[0]["time"], trade["time"]],
-                    y=[op.iloc[0]["fill_price"], trade["fill_price"]],
-                    mode="lines",
-                    line={"color":color,"width":1,"dash":"dot" if pnl<0 else "solid"},
-                    showlegend=False, hoverinfo="skip", opacity=0.4,
-                ))
+    if not chart_components:
+        chart_components = [html.Div("No chart data available.",
+                                     style={"color": MUTED, "padding": "20px"})]
 
-            fig.add_trace(go.Scatter(
-                x=[trade["time"]], y=[trade["fill_price"]],
-                mode="markers",
-                marker={"symbol":"x","size":8,
-                        "color":UP if pnl>=0 else DOWN,
-                        "line":{"color":BG,"width":1}},
-                name=f"S{sc_num} exit", legendgroup=f"s{sc_num}",
-                showlegend=False,
-                hovertemplate=(f"S{sc_num} EXIT<br>Price: {trade['fill_price']:.2f}<br>"
-                               f'P&L: {"+"if pnl>=0 else""}£{pnl:.2f}<extra></extra>'),
-            ))
+    title = f"5m candles  ·  {len(all_sym_ids)} symbol(s)  ·  {len(df_sc)} scenarios"
 
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=PANEL,
-        font={"family":"monospace","color":TEXT,"size":11},
-        margin={"t":10,"r":40,"b":40,"l":10}, height=380,
-        xaxis={"gridcolor":BORDER,"zerolinecolor":BORDER,
-               "tickfont":{"color":MUTED},"rangeslider":{"visible":False},"type":"date"},
-        yaxis={"gridcolor":BORDER,"zerolinecolor":BORDER,
-               "tickfont":{"color":MUTED},"side":"right"},
-        legend={"bgcolor":"rgba(0,0,0,0)","font":{"color":MUTED,"size":10},
-                "orientation":"h","x":0,"y":1.08},
-        hovermode="x unified",
-        hoverlabel={"bgcolor":CARD,"font":{"color":TEXT,"family":"monospace"}},
-    )
+    btn_style = {"fontSize": "11px", "padding": "6px 14px", "background": UP,
+                 "color": BG, "border": f"1px solid {UP}",
+                 "borderRadius": "6px", "cursor": "pointer", "fontWeight": "700"}
 
-    title = (f"{symbols.get(str(primary_sym),str(primary_sym))}  ·  "
-             f"5m  ·  {len(df_sc)} scenarios")
-
-    btn_style = {"fontSize":"11px","padding":"6px 14px","background":UP,
-                 "color":BG,"border":f"1px solid {UP}",
-                 "borderRadius":"6px","cursor":"pointer","fontWeight":"700"}
-
-    return dcc.Graph(figure=fig,
-                     config={"displayModeBar":True,
-                             "modeBarButtonsToRemove":["lasso2d","select2d"],
-                             "displaylogo":False},
-                     style={"height":"380px"}), title, btn_style
+    return html.Div(chart_components), title, btn_style
 
 
 # ── Scenarios: CSV download ───────────────────────────────────
