@@ -655,26 +655,26 @@ SESSIONS = [
     {
         "name":  "Sydney",
         "start": 21,  "end": 6,   # 21:00–06:00 UTC (crosses midnight)
-        "color": "rgba(100,160,255,0.07)",
-        "label_color": "rgba(100,160,255,0.7)",
+        "color": "rgba(160,80,220,0.09)",       # purple
+        "label_color": "rgba(180,100,240,0.9)",
     },
     {
         "name":  "Tokyo",
         "start": 0,   "end": 9,   # 00:00–09:00 UTC
-        "color": "rgba(255,50,50,0.06)",
-        "label_color": "rgba(255,100,100,0.7)",
+        "color": "rgba(220,50,50,0.09)",         # red
+        "label_color": "rgba(240,80,80,0.9)",
     },
     {
         "name":  "London",
         "start": 8,   "end": 17,  # 08:00–17:00 UTC
-        "color": "rgba(100,220,160,0.07)",
-        "label_color": "rgba(100,220,160,0.7)",
+        "color": "rgba(60,130,220,0.09)",        # blue
+        "label_color": "rgba(80,150,240,0.9)",
     },
     {
         "name":  "New York",
         "start": 13,  "end": 22,  # 13:00–22:00 UTC
-        "color": "rgba(255,180,50,0.07)",
-        "label_color": "rgba(255,180,50,0.7)",
+        "color": "rgba(40,180,100,0.09)",        # green
+        "label_color": "rgba(60,200,120,0.9)",
     },
 ]
 
@@ -1496,15 +1496,26 @@ def load_scenario_chart(n_clicks, selected_date, page):
             if sym_id not in sc_row["_sym_ids"]:
                 continue
 
-            fig.add_vrect(
-                x0=sc_row["_first_entry"], x1=sc_row["_last_exit"],
-                fillcolor=f"rgba({r},{g},{b},0.08)", layer="below", line_width=0
+            # Vertical dotted lines at scenario start/end — no fill to avoid clashing with sessions
+            fig.add_vline(
+                x=sc_row["_first_entry"],
+                line_width=1.5, line_dash="dot",
+                line_color=f"rgba({r},{g},{b},0.8)",
+            )
+            fig.add_vline(
+                x=sc_row["_last_exit"],
+                line_width=1, line_dash="dot",
+                line_color=f"rgba({r},{g},{b},0.4)",
             )
             fig.add_annotation(
                 x=sc_row["_first_entry"], xanchor="left",
-                y=0.97, yanchor="top", yref="paper",
-                text=f"S{sc_num}", showarrow=False,
-                font={"size": 9, "color": color}, bgcolor="rgba(0,0,0,0)",
+                y=0.99, yanchor="top", yref="paper",
+                text=f"◀ S{sc_num}",
+                showarrow=False,
+                font={"size": 11, "color": color, "family": "monospace"},
+                bgcolor=f"rgba({r},{g},{b},0.15)",
+                bordercolor=f"rgba({r},{g},{b},0.5)",
+                borderpad=3, borderwidth=1,
             )
 
             sc_cls = closings_raw[closings_raw["scenario"] == sc_num] if not closings_raw.empty else pd.DataFrame()
