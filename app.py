@@ -1205,6 +1205,67 @@ SC_COLOURS = [
     "#8bc34a", "#ff5722",
 ]
 
+def calc_scenario_exposure(pos_ids, openings, closings_grp, all_prices):
+    """
+    Calculate max exposure drawdown for a single scenario.
+    Uses the same logic as calc_exposure_drawdown but scoped to one scenario's positions.
+    """
+    import math
+    positions = []
+    for _, cl in closings_grp.iterrows():
+        op = openings[openings["position_id"] == cl["position_id"]]
+        if op.empty:
+            continue
+        op = op.iloc[0]
+        price_diff = cl["fill_price"] - op["fill_price"]
+        if op["direction"] == "SELL":
+            price_diff = -price_diff
+        vol   = op["volume"]
+        scale = (cl["pnl"] / (price_diff * vol)
+                 if (price_diff != 0 and vol != 0) else 1.0)
+        positions.append({
+            "symbol_id":   cl["symbol_id"],
+            "direction":   op["direction"],
+            "volume":      vol,
+            "entry_price": op["fill_price"],
+            "entry_time":  op["time"],
+            "exit_time":   cl["time"],
+            "scale":       scale,
+        })
+
+    if not positions:
+        return 0.0
+
+    pos_df = pd.DataFrame(positions)
+    event_times = sorted(set(all_prices["time"].tolist()))
+    worst = 0.0
+
+    for t in event_times:
+        open_pos = pos_df[
+            (pos_df["entry_time"] <= t) & (pos_df["exit_time"] > t)
+        ]
+        if open_pos.empty:
+            continue
+        total_float = 0.0
+        for _, pos in open_pos.iterrows():
+            sym_px = all_prices[
+                (all_prices["symbol_id"] == pos["symbol_id"]) &
+                (all_prices["time"] >= pos["entry_time"]) &
+                (all_prices["time"] <= t)
+            ]["fill_price"]
+            if sym_px.empty:
+                continue
+            if pos["direction"] == "BUY":
+                adverse = sym_px.min() - pos["entry_price"]
+            else:
+                adverse = pos["entry_price"] - sym_px.max()
+            total_float += adverse * pos["volume"] * pos["scale"]
+        if total_float < worst:
+            worst = total_float
+
+    return round(worst, 2) if worst < 0 else 0.0
+
+
 def build_scenarios(date_str):
     """
     Detect trading scenarios by clustering exits.
@@ -1232,6 +1293,12 @@ def build_scenarios(date_str):
     GAP_MINS = 10
     gaps = closings["time"].diff().dt.total_seconds().fillna(9999) / 60
     closings["scenario"] = (gaps > GAP_MINS).cumsum() + 1
+
+    # Prepare price events for exposure calculation
+    all_prices = df_all[["time", "symbol_id", "fill_price"]].copy()
+    all_prices = all_prices[
+        (all_prices["time"] >= sel_dt) & (all_prices["time"] < sel_end)
+    ]
 
     rows = []
     for sc_num, grp in closings.groupby("scenario"):
@@ -1265,6 +1332,13 @@ def build_scenarios(date_str):
         buys  = int(entry_dirs.get("BUY",  0))
         sells = int(entry_dirs.get("SELL", 0))
 
+        # Exposure DD scoped to this scenario's time window
+        sc_prices = all_prices[
+            (all_prices["time"] >= first_entry) &
+            (all_prices["time"] <= last_exit)
+        ]
+        exposure_dd = calc_scenario_exposure(pos_ids, openings, grp, sc_prices)
+
         rows.append({
             "Scenario":       int(sc_num),
             "Start":          first_entry.strftime("%H:%M:%S"),
@@ -1280,6 +1354,7 @@ def build_scenarios(date_str):
             "Win %":          round(wins / n * 100) if n else 0,
             "Best (£)":       round(best, 2),
             "Worst (£)":      round(worst, 2),
+            "Exposure DD (£)": exposure_dd,
             "Instruments":    syms_str,
             "_sym_ids":       list(sym_ids),
             "_first_entry":   first_entry,
@@ -1338,6 +1413,13 @@ def update_scenario_table(selected_date, page):
                      style={"fontSize": "13px", "color": TEXT}),
             html.Div(f'{row["Buys"]}B / {row["Sells"]}S  ·  {row["Instruments"]}',
                      style={"fontSize": "12px", "color": MUTED, "marginTop": "2px"}),
+            html.Div(
+                f'Exposure DD: £{row["Exposure DD (£)"]:.2f}' if row["Exposure DD (£)"] < 0
+                else "Exposure DD: £0.00",
+                style={"fontSize": "12px",
+                       "color": DOWN if row["Exposure DD (£)"] < -20 else MUTED,
+                       "marginTop": "4px", "fontWeight": "600"}
+            ),
         ], style={"background": CARD,
                   "border": f"1px solid {BORDER}",
                   "borderTop": f"3px solid {color}",
@@ -1347,7 +1429,7 @@ def update_scenario_table(selected_date, page):
     # Table
     cols = ["Scenario","Start","First Close","Last Close","Duration",
             "Trades","Buys","Sells","P&L (£)","Net (£)",
-            "Win %","Best (£)","Worst (£)","Instruments"]
+            "Win %","Exposure DD (£)","Best (£)","Worst (£)","Instruments"]
 
     th = {"fontSize":"11px","letterSpacing":"1px","textTransform":"uppercase",
           "color":TEXT,"padding":"12px 16px","background":CARD,
@@ -1383,6 +1465,8 @@ def update_scenario_table(selected_date, page):
             html.Td(f'{"+"if row["Net (£)"]>=0 else""}£{row["Net (£)"]:.2f}',
                     style=td(UP if row["Net (£)"]>=0 else DOWN)),
             html.Td(f'{wr:.0f}%',          style=td(UP if wr>=50 else DOWN)),
+            html.Td(f'£{row["Exposure DD (£)"]:.2f}',
+                    style=td(DOWN if row["Exposure DD (£)"] < -20 else MUTED)),
             html.Td(f'+£{row["Best (£)"]:.2f}',  style=td(UP)),
             html.Td(f'£{row["Worst (£)"]:.2f}',  style=td(DOWN)),
             html.Td(row["Instruments"],    style=td(TEXT,"left")),
