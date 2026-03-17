@@ -1,4 +1,12 @@
-# fetch_data.py — fetches 90 days of deals from cTrader
+# fetch_data.py — incremental fetch with local cache
+# 
+# Logic:
+#   - If trades.csv does not exist → fetch FETCH_DAYS days from scratch
+#   - If trades.csv exists        → only fetch from last saved date to today
+#   - Merge, deduplicate on deal_id, save
+#
+# This means running ./run.sh daily only pulls that day's data — fast.
+
 import os, sys, time, warnings
 warnings.filterwarnings("ignore")
 from datetime import datetime, timezone, timedelta
@@ -16,8 +24,7 @@ ACCOUNT_ID    = int(os.getenv("CTRADER_ACCOUNT_ID", "0"))
 HOST          = os.getenv("CTRADER_HOST", "live.ctraderapi.com")
 PORT          = int(os.getenv("CTRADER_PORT", "5035"))
 
-# ── How far back to fetch ─────────────────────────────────────
-FETCH_DAYS = 120
+FETCH_DAYS = 120   # only used when no cache exists
 
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -33,11 +40,63 @@ def validate_config():
         print(f"\n  ✗ Missing in .env: {', '.join(missing)}\n")
         sys.exit(1)
 
+def get_fetch_range():
+    """
+    Decide what time range to fetch.
+    Returns (from_ms, to_ms, mode) where mode is 'full' or 'incremental'.
+    """
+    now_ms = int(time.time() * 1000)
+
+    if not OUTPUT.exists():
+        # No cache — fetch full history
+        from_ms = now_ms - (FETCH_DAYS * 24 * 60 * 60 * 1000)
+        print(f"  → No cache found. Fetching full {FETCH_DAYS} days of history.")
+        return from_ms, now_ms, "full"
+
+    # Cache exists — check how stale it is
+    try:
+        df_existing = pd.read_csv(OUTPUT)
+        df_existing["time"] = pd.to_datetime(
+            df_existing["time"], format="ISO8601", utc=True
+        )
+        latest_ts = df_existing["time"].max()
+        latest_ms = int(latest_ts.timestamp() * 1000)
+        age_hours = (now_ms - latest_ms) / (1000 * 3600)
+        age_days  = age_hours / 24
+
+        print(f"  → Cache found: {len(df_existing):,} records, "
+              f"latest {latest_ts.strftime('%d %b %Y %H:%M')} UTC "
+              f"({age_hours:.1f}h ago)")
+
+        if age_hours < 1:
+            print("  → Cache is fresh (< 1 hour old). Skipping fetch.")
+            return None, None, "skip"
+
+        # Fetch from latest record minus 1 hour (overlap to catch any late-arriving deals)
+        from_ms = latest_ms - (60 * 60 * 1000)
+        print(f"  → Incremental fetch: last {age_days:.1f} day(s) of new data.")
+        return from_ms, now_ms, "incremental"
+
+    except Exception as e:
+        print(f"  ⚠  Could not read cache ({e}). Fetching full history.")
+        from_ms = now_ms - (FETCH_DAYS * 24 * 60 * 60 * 1000)
+        return from_ms, now_ms, "full"
+
 def fetch():
     validate_config()
 
+    from_ms, to_ms, mode = get_fetch_range()
+
+    if mode == "skip":
+        print("  ✓ Using cached data — no fetch needed.\n")
+        return
+
     print("\n  ┌─────────────────────────────────────────┐")
-    print(f"  │  Fetching {FETCH_DAYS} days of deals from cTrader  │")
+    if mode == "full":
+        print(f"  │  Full fetch: {FETCH_DAYS} days from cTrader     │")
+    else:
+        days = (to_ms - from_ms) / (1000 * 60 * 60 * 24)
+        print(f"  │  Incremental fetch: last {days:.1f} day(s)       │")
     print("  └─────────────────────────────────────────┘\n")
 
     try:
@@ -52,25 +111,20 @@ def fetch():
     except ImportError as e:
         print(f"  ✗ Import error: {e}"); sys.exit(1)
 
-    now_ms   = int(time.time() * 1000)
-    # cTrader API max window per request is 1 week — we loop in weekly chunks
-    all_rows = []
-    chunk_ms = 7 * 24 * 60 * 60 * 1000   # 1 week in ms
+    # Split range into weekly chunks (cTrader max per request)
+    chunk_ms = 7 * 24 * 60 * 60 * 1000
     chunks   = []
-    cursor   = now_ms
-    for _ in range((FETCH_DAYS // 7) + 1):
-        chunk_end   = cursor
-        chunk_start = cursor - chunk_ms
-        chunks.append((chunk_start, chunk_end))
+    cursor   = to_ms
+    while cursor > from_ms:
+        chunk_start = max(cursor - chunk_ms, from_ms)
+        chunks.append((chunk_start, cursor))
         cursor = chunk_start
-        if (now_ms - chunk_start) >= FETCH_DAYS * 24 * 60 * 60 * 1000:
-            break
 
-    print(f"  → Fetching {len(chunks)} weekly chunks ({FETCH_DAYS} days total)…\n")
+    print(f"  → Fetching {len(chunks)} chunk(s)…\n")
 
-    state = {"chunk_idx": 0, "done": False, "error": None}
-
-    client = Client(HOST, PORT, TcpProtocol)
+    all_rows = []
+    state    = {"chunk_idx": 0, "done": False, "error": None}
+    client   = Client(HOST, PORT, TcpProtocol)
 
     APP_AUTH_RES     = ProtoOAApplicationAuthRes().payloadType
     ACCOUNT_AUTH_RES = ProtoOAAccountAuthRes().payloadType
@@ -96,26 +150,42 @@ def fetch():
 
     def finish():
         if all_rows:
-            df = pd.DataFrame(all_rows)
-            df = df.drop_duplicates(subset=["deal_id"])
-            df = df.sort_values("time").reset_index(drop=True)
-            df.to_csv(OUTPUT, index=False)
-            closing = df[df["is_closing"] == True]
-            print(f"\n  ✓ Total deals saved : {len(df)}")
-            print(f"  ✓ Closed positions  : {len(closing)}")
-            if not closing.empty:
-                pnl = closing["pnl"].sum()
-                print(f"  ✓ Total P&L         : £{pnl:.2f}")
-                # Breakdown by week
-                print(f"\n  Weekly P&L breakdown:")
-                closing["week"] = pd.to_datetime(closing["time"]).dt.to_period("W")
-                for week, grp in closing.groupby("week"):
-                    wpnl = grp["pnl"].sum()
-                    bar  = "█" * min(int(abs(wpnl) / 50), 20)
-                    sign = "+" if wpnl >= 0 else ""
-                    print(f"    {str(week):<20} {sign}£{wpnl:>8.2f}  {bar}")
+            df_new = pd.DataFrame(all_rows)
+            df_new = df_new.drop_duplicates(subset=["deal_id"])
+
+            # Merge with existing cache if incremental
+            if mode == "incremental" and OUTPUT.exists():
+                df_old = pd.read_csv(OUTPUT)
+                df_combined = pd.concat([df_old, df_new], ignore_index=True)
+                df_combined = df_combined.drop_duplicates(subset=["deal_id"])
+                df_combined = df_combined.sort_values("time").reset_index(drop=True)
+                df_combined.to_csv(OUTPUT, index=False)
+                new_count = len(df_combined) - len(df_old)
+                print(f"\n  ✓ Added {new_count} new records → {len(df_combined):,} total")
+            else:
+                df_new = df_new.sort_values("time").reset_index(drop=True)
+                df_new.to_csv(OUTPUT, index=False)
+                closing = df_new[df_new["is_closing"] == True]
+                print(f"\n  ✓ Saved {len(df_new):,} deals → {OUTPUT}")
+                print(f"  ✓ Closed positions : {len(closing)}")
+                if not closing.empty:
+                    print(f"  ✓ Total P&L        : £{closing['pnl'].sum():.2f}")
+
+                    # Weekly breakdown
+                    print(f"\n  Weekly P&L breakdown:")
+                    closing_copy = closing.copy()
+                    closing_copy["time"] = pd.to_datetime(
+                        closing_copy["time"], format="ISO8601", utc=True
+                    )
+                    closing_copy["week"] = closing_copy["time"].dt.to_period("W")
+                    for week, grp in closing_copy.groupby("week"):
+                        wpnl = grp["pnl"].sum()
+                        bar  = "█" * min(int(abs(wpnl) / 50), 20)
+                        sign = "+" if wpnl >= 0 else ""
+                        print(f"    {str(week):<20} {sign}£{wpnl:>8.2f}  {bar}")
         else:
-            print("  ⚠  No deals found.")
+            print("  ⚠  No new deals found.")
+
         state["done"] = True
         try: reactor.stop()
         except: pass
@@ -153,7 +223,8 @@ def fetch():
             start, end = chunks[idx]
             start_dt = datetime.fromtimestamp(start/1000, tz=timezone.utc).strftime("%d %b")
             end_dt   = datetime.fromtimestamp(end/1000,   tz=timezone.utc).strftime("%d %b")
-            print(f"  ✓ Chunk {idx+1}/{len(chunks)}  ({start_dt} → {end_dt})  {len(deals)} deals")
+            print(f"  ✓ Chunk {idx+1}/{len(chunks)}  "
+                  f"({start_dt} → {end_dt})  {len(deals)} deals")
 
             for d in deals:
                 if d.dealStatus != 2:
@@ -168,7 +239,8 @@ def fetch():
                     "close_price": d.closePositionDetail.entryPrice
                                    if d.HasField("closePositionDetail") else 0,
                     "time":        datetime.fromtimestamp(
-                                       d.executionTimestamp / 1000, tz=timezone.utc),
+                                       d.executionTimestamp / 1000,
+                                       tz=timezone.utc),
                     "pnl":         d.closePositionDetail.grossProfit / 100
                                    if d.HasField("closePositionDetail") else 0,
                     "commission":  d.commission / 100,
@@ -176,7 +248,6 @@ def fetch():
                 })
 
             state["chunk_idx"] += 1
-            # Small delay between requests to avoid rate limiting
             from twisted.internet import reactor as r
             r.callLater(0.3, request_next_chunk, c)
 
