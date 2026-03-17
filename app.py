@@ -27,14 +27,14 @@ UP     = "#26a69a"
 DOWN   = "#ef5350"
 
 TIMEFRAMES = [
-    {"label": "1W",  "days": 7},
-    {"label": "2W",  "days": 14},
-    {"label": "3W",  "days": 21},
-    {"label": "1M",  "days": 30},
-    {"label": "2M",  "days": 60},
-    {"label": "3M",  "days": 90},
-    {"label": "4M",  "days": 120},
     {"label": "All", "days": 9999},
+    {"label": "4M",  "days": 120},
+    {"label": "3M",  "days": 90},
+    {"label": "2M",  "days": 60},
+    {"label": "1M",  "days": 30},
+    {"label": "3W",  "days": 21},
+    {"label": "2W",  "days": 14},
+    {"label": "1W",  "days": 7},
 ]
 
 app = Dash(__name__, title="Trading Journal", suppress_callback_exceptions=True)
@@ -247,7 +247,7 @@ page_overview = html.Div(id="page-overview", children=[
                     "gap": "8px", "marginBottom": "20px"},
     children=[
         html.Div("Period:", style={"fontSize": "10px", "color": MUTED, "marginRight": "4px"}),
-        *[tf_btn(tf["label"], active=(tf["label"] == "1W")) for tf in TIMEFRAMES],
+        *[tf_btn(tf["label"], active=(tf["label"] == "All")) for tf in TIMEFRAMES],
     ]),
 
     html.Div(id="stat-cards",
@@ -308,11 +308,11 @@ page_journal = html.Div(id="page-journal", children=[
                                "borderRadius": "6px", "cursor": "pointer", "fontWeight": "700"}),
             html.Button("P&L",     id="sort-pnl",   n_clicks=0,
                         style={"fontSize": "13px", "padding": "8px 16px", "background": CARD,
-                               "color": MUTED, "border": f"1px solid {BORDER}",
+                               "color": TEXT, "border": f"1px solid {BORDER}",
                                "borderRadius": "6px", "cursor": "pointer"}),
             html.Button("Trades",  id="sort-trades", n_clicks=0,
                         style={"fontSize": "13px", "padding": "8px 16px", "background": CARD,
-                               "color": MUTED, "border": f"1px solid {BORDER}",
+                               "color": TEXT, "border": f"1px solid {BORDER}",
                                "borderRadius": "6px", "cursor": "pointer"}),
         ]),
         html.Button("⬇  Download CSV", id="download-btn", n_clicks=0,
@@ -321,7 +321,7 @@ page_journal = html.Div(id="page-journal", children=[
                            "borderRadius": "6px", "cursor": "pointer"}),
         html.Button("📊  Calculate Exposure DD", id="live-dd-btn", n_clicks=0,
                     style={"fontSize": "13px", "padding": "10px 22px", "background": CARD,
-                           "color": MUTED, "border": f"1px solid {BORDER}",
+                           "color": TEXT, "border": f"1px solid {BORDER}",
                            "borderRadius": "6px", "cursor": "pointer"}),
         html.Div("(instant — from CSV)", id="live-dd-hint",
                  style={"fontSize": "10px", "color": MUTED}),
@@ -354,8 +354,8 @@ page_scenarios = html.Div(id="page-scenarios", children=[
                     "border": f"1px solid {BORDER}",
                     "borderRadius": "10px", "padding": "16px 20px"},
     children=[
-        html.Div("Date:", style={"fontSize": "10px", "color": MUTED,
-                                  "letterSpacing": "2px", "textTransform": "uppercase"}),
+        html.Div("Date:", style={"fontSize": "13px", "color": TEXT,
+                                  "letterSpacing": "1px", "textTransform": "uppercase", "fontWeight": "600"}),
         dcc.DatePickerSingle(
             id="sc-date-picker",
             date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
@@ -363,10 +363,10 @@ page_scenarios = html.Div(id="page-scenarios", children=[
             style={"fontFamily": "monospace", "color": TEXT, "background": CARD},
         ),
         html.Div(id="sc-day-summary",
-                 style={"fontSize": "11px", "color": MUTED, "marginLeft": "auto"}),
+                 style={"fontSize": "14px", "color": TEXT, "marginLeft": "auto", "fontWeight": "600"}),
         html.Button("🕯  Load Chart", id="sc-chart-btn", n_clicks=0,
                     style={"fontSize": "13px", "padding": "9px 18px",
-                           "background": CARD, "color": MUTED,
+                           "background": CARD, "color": TEXT,
                            "border": f"1px solid {BORDER}",
                            "borderRadius": "6px", "cursor": "pointer"}),
         html.Button("⬇  Download CSV", id="sc-download-btn", n_clicks=0,
@@ -383,8 +383,8 @@ page_scenarios = html.Div(id="page-scenarios", children=[
 
     # Scenarios table
     html.Div([
-        html.Div("Scenario log", style={"fontSize": "9px", "letterSpacing": "2px",
-                                         "textTransform": "uppercase", "color": MUTED,
+        html.Div("Scenario log", style={"fontSize": "12px", "letterSpacing": "2px",
+                                         "textTransform": "uppercase", "color": TEXT,
                                          "marginBottom": "12px"}),
         html.Div(id="sc-table"),
     ], style={"background": PANEL, "border": f"1px solid {BORDER}",
@@ -396,14 +396,14 @@ page_scenarios = html.Div(id="page-scenarios", children=[
                         "alignItems": "center", "marginBottom": "12px"},
         children=[
             html.Div(id="sc-chart-title",
-                     style={"fontSize": "9px", "letterSpacing": "2px",
-                            "textTransform": "uppercase", "color": MUTED}),
+                     style={"fontSize": "12px", "letterSpacing": "1px",
+                            "textTransform": "uppercase", "color": TEXT, "fontWeight": "600"}),
         ]),
         dcc.Loading(type="circle", color=GOLD, children=
             html.Div(id="sc-market-chart-wrap",
                      children=html.Div(
                          "Click  🕯 Load Chart  above to overlay your trades on the market",
-                         style={"color": MUTED, "fontSize": "12px",
+                         style={"color": TEXT, "fontSize": "12px",
                                 "padding": "40px", "textAlign": "center"}
                      ))
         ),
@@ -420,7 +420,7 @@ app.layout = html.Div(
            "fontFamily": "monospace", "color": TEXT},
     children=[
         dcc.Store(id="page-store", data="overview"),
-        dcc.Store(id="tf-store", data="1W"),
+        dcc.Store(id="tf-store", data="All"),
         dcc.Interval(id="interval", interval=60_000, n_intervals=0),
         html.Div(id="page-content"),
     ]
@@ -457,7 +457,7 @@ def render_page(page):
     prevent_initial_call=True,
 )
 def set_tf(*_):
-    return ctx.triggered_id.replace("tf-", "") if ctx.triggered_id else "1W"
+    return ctx.triggered_id.replace("tf-", "") if ctx.triggered_id else "All"
 
 @callback(
     *[Output(f"tf-{tf['label']}", "style") for tf in TIMEFRAMES],
@@ -467,7 +467,7 @@ def update_tf_styles(active):
     return [{
         "fontSize": "13px", "padding": "9px 18px",
         "background": GOLD if tf["label"] == active else CARD,
-        "color": BG if tf["label"] == active else MUTED,
+        "color": BG if tf["label"] == active else TEXT,
         "border": f"1px solid {GOLD if tf['label'] == active else BORDER}",
         "borderRadius": "6px", "cursor": "pointer",
         "fontWeight": "700" if tf["label"] == active else "400",
@@ -523,7 +523,7 @@ def update_overview(active_tf, _):
         x=df["time"], y=df["cum_pnl"], mode="lines+markers",
         line={"color": GOLD, "width": 2, "shape": "spline"},
         marker={"size": 5, "color": [UP if v >= 0 else DOWN for v in df["cum_pnl"]]},
-        fill="tozeroy", fillcolor="rgba(240,180,41,0.07)",
+        fill="tozeroy", fillcolor="rgba(38,166,154,0.12)",
         hovertemplate="%{x|%d %b %H:%M}<br>£%{y:.2f}<extra></extra>",
     ))
     pnl_fig.update_layout(**base_layout())
@@ -556,10 +556,10 @@ def update_daily(selected_date):
     if df_day.empty:
         return html.Div([
             html.Div("📭  No trades on this day.",
-                     style={"color": MUTED, "fontSize": "14px",
+                     style={"color": TEXT, "fontSize": "14px",
                             "padding": "40px 0", "textAlign": "center"}),
             html.Div("Try another date using the picker above.",
-                     style={"color": MUTED, "fontSize": "11px", "textAlign": "center"}),
+                     style={"color": TEXT, "fontSize": "11px", "textAlign": "center"}),
         ]), "No trades this day"
 
     total_pnl = df_day["pnl"].sum()
@@ -614,11 +614,11 @@ def update_daily(selected_date):
                    "tickfont": {"color": MUTED}, "tickformat": "%H:%M"},
             yaxis={"gridcolor": BORDER, "zerolinecolor": BORDER,
                    "tickfont": {"color": MUTED}, "side": "right",
-                   "title": {"text": "price", "font": {"color": MUTED, "size": 9}}},
+                   "title": {"text": "price", "font": {"color": TEXT, "size": 9}}},
             yaxis2={"overlaying": "y", "side": "left",
                     "tickprefix": "£", "tickfont": {"color": MUTED},
                     "gridcolor": "rgba(0,0,0,0)",
-                    "title": {"text": "cum P&L", "font": {"color": MUTED, "size": 9}}},
+                    "title": {"text": "cum P&L", "font": {"color": TEXT, "size": 9}}},
             legend={"bgcolor": "rgba(0,0,0,0)", "font": {"color": MUTED},
                     "orientation": "h", "x": 0, "y": 1.1},
             hovermode="x unified",
@@ -634,7 +634,7 @@ def update_daily(selected_date):
                     html.Span(sym_name, style={"fontSize": "16px", "fontWeight": "800",
                                                "color": GOLD}),
                     html.Span(f"  {len(df_sym)} trades",
-                              style={"fontSize": "10px", "color": MUTED,
+                              style={"fontSize": "10px", "color": TEXT,
                                      "marginLeft": "8px"}),
                 ]),
                 html.Div(f'{"+" if sym_pnl>=0 else ""}£{sym_pnl:.2f}',
@@ -1121,7 +1121,7 @@ def update_journal(sort_key, page, live_dd_data):
             "Instruments", "First Session", "Sessions"]
 
     th_base = {"fontSize": "9px", "letterSpacing": "1px",
-               "textTransform": "uppercase", "color": MUTED,
+               "textTransform": "uppercase", "color": TEXT,
                "padding": "10px 14px", "background": CARD,
                "borderBottom": f"1px solid {BORDER}",
                "textAlign": "right", "whiteSpace": "nowrap"}
@@ -1326,18 +1326,18 @@ def update_scenario_table(selected_date, page):
         color = SC_COLOURS[i % len(SC_COLOURS)]
         cards.append(html.Div([
             html.Div(f'Scenario {row["Scenario"]}',
-                     style={"fontSize": "9px", "letterSpacing": "2px",
+                     style={"fontSize": "11px", "letterSpacing": "2px",
                             "textTransform": "uppercase",
-                            "color": color, "marginBottom": "4px"}),
+                            "color": color, "marginBottom": "6px", "fontWeight": "700"}),
             html.Div(f'{"+" if pnl>=0 else ""}£{pnl:.2f}',
-                     style={"fontSize": "20px", "fontWeight": "800",
+                     style={"fontSize": "24px", "fontWeight": "800",
                             "color": UP if pnl >= 0 else DOWN}),
             html.Div(f'{row["Start"]} → {row["Last Close"]}',
-                     style={"fontSize": "10px", "color": MUTED, "marginTop": "2px"}),
+                     style={"fontSize": "13px", "color": TEXT, "marginTop": "4px"}),
             html.Div(f'{row["Trades"]} trades · {row["Duration"]}',
-                     style={"fontSize": "10px", "color": MUTED}),
+                     style={"fontSize": "13px", "color": TEXT}),
             html.Div(f'{row["Buys"]}B / {row["Sells"]}S  ·  {row["Instruments"]}',
-                     style={"fontSize": "10px", "color": MUTED, "marginTop": "2px"}),
+                     style={"fontSize": "12px", "color": MUTED, "marginTop": "2px"}),
         ], style={"background": CARD,
                   "border": f"1px solid {BORDER}",
                   "borderTop": f"3px solid {color}",
@@ -1349,13 +1349,14 @@ def update_scenario_table(selected_date, page):
             "Trades","Buys","Sells","P&L (£)","Net (£)",
             "Win %","Best (£)","Worst (£)","Instruments"]
 
-    th = {"fontSize":"9px","letterSpacing":"1px","textTransform":"uppercase",
-          "color":MUTED,"padding":"10px 14px","background":CARD,
-          "borderBottom":f"1px solid {BORDER}","textAlign":"right","whiteSpace":"nowrap"}
+    th = {"fontSize":"11px","letterSpacing":"1px","textTransform":"uppercase",
+          "color":TEXT,"padding":"12px 16px","background":CARD,
+          "borderBottom":f"1px solid {BORDER}","textAlign":"right","whiteSpace":"nowrap",
+          "fontWeight":"700"}
     thl = {**th,"textAlign":"left"}
 
     def td(c=TEXT, align="right"):
-        return {"fontSize":"11px","color":c,"padding":"9px 14px",
+        return {"fontSize":"13px","color":c,"padding":"12px 16px",
                 "textAlign":align,"borderBottom":f"1px solid {BORDER}","whiteSpace":"nowrap"}
 
     hrow = html.Tr([html.Th(c, style=thl if c in
@@ -1790,7 +1791,7 @@ def set_sort2(*_):
     def btn_style(active):
         return {"fontSize": "13px", "padding": "8px 16px",
                 "background": GOLD if active else CARD,
-                "color": BG if active else MUTED,
+                "color": BG if active else TEXT,
                 "border": f"1px solid {GOLD if active else BORDER}",
                 "borderRadius": "6px", "cursor": "pointer",
                 "fontWeight": "700" if active else "400"}
