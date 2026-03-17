@@ -1,8 +1,10 @@
 #!/bin/bash
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
-ENV_NAME="poc_app"
+# ── run.sh ── launch the Trading Journal ──────────────────────
+# Run from anywhere: bash ~/Downloads/poc_app/scripts/run.sh
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
+ENV_NAME="poc_app"
 CONDA_SH=""
 for p in \
     "$HOME/anaconda3/etc/profile.d/conda.sh" \
@@ -14,12 +16,18 @@ do
     [ -f "$p" ] && CONDA_SH="$p" && break
 done
 
+if [ -z "$CONDA_SH" ]; then
+    echo "  ✗ Conda not found. Install Miniconda first."
+    exit 1
+fi
+
 source "$CONDA_SH"
 conda activate "$ENV_NAME"
 pip install -r requirements.txt -q
 
 if [ ! -f ".env" ]; then
-    echo "  ✗ No .env file. Copy .env.example → .env and fill in credentials."
+    echo "  ✗ No .env file found."
+    echo "    Copy .env.example to .env and fill in your cTrader credentials."
     exit 1
 fi
 
@@ -27,7 +35,6 @@ echo ""
 echo "  → Fetching latest trades from cTrader..."
 python fetch_data.py
 
-# Fetch symbol names if not already cached
 if [ ! -f "data/symbols.json" ]; then
     echo "  → Fetching symbol names (one-time)..."
     python fetch_symbols.py
