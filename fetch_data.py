@@ -158,6 +158,11 @@ def fetch():
                 df_old = pd.read_csv(OUTPUT)
                 df_combined = pd.concat([df_old, df_new], ignore_index=True)
                 df_combined = df_combined.drop_duplicates(subset=["deal_id"])
+                # Convert time column to string consistently before sorting
+                # to avoid Timestamp vs str comparison error
+                df_combined["time"] = pd.to_datetime(
+                    df_combined["time"], format="ISO8601", utc=True
+                ).dt.strftime("%Y-%m-%d %H:%M:%S.%f%z")
                 df_combined = df_combined.sort_values("time").reset_index(drop=True)
                 df_combined.to_csv(OUTPUT, index=False)
                 new_count = len(df_combined) - len(df_old)

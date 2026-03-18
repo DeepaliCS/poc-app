@@ -235,6 +235,7 @@ def header(active_page="overview"):
             nav_btn("📊  Overview",    "nav-overview", active=(active_page=="overview")),
             nav_btn("📋  Journal",     "nav-journal",  active=(active_page=="journal")),
             nav_btn("🔍  Scenarios",   "nav-scenarios",active=(active_page=="scenarios")),
+            nav_btn("📱  Mobile",      "nav-mobile",   active=(active_page=="mobile")),
         ]),
     ])
 
@@ -414,6 +415,66 @@ page_scenarios = html.Div(id="page-scenarios", children=[
     dcc.Store(id="sc-store", data={}),
 ])
 
+
+# ── Page 6: Mobile View ───────────────────────────────────────
+page_mobile = html.Div(id="page-mobile", style={
+    "maxWidth": "480px", "margin": "0 auto",
+    "paddingBottom": "80px", "fontFamily": "monospace",
+}, children=[
+    html.Div(style={
+        "background": PANEL, "borderBottom": f"1px solid {BORDER}",
+        "padding": "16px 20px",
+        "display": "flex", "justifyContent": "space-between", "alignItems": "center",
+    }, children=[
+        html.Div([
+            html.Div("TRADING JOURNAL",
+                     style={"fontSize": "16px", "fontWeight": "800",
+                            "color": GOLD, "letterSpacing": "2px"}),
+            html.Div("GOLD & METALS",
+                     style={"fontSize": "10px", "color": MUTED}),
+        ]),
+        html.Button("🔄 Refresh", id="mob-refresh-real", n_clicks=0,
+                    style={"fontSize": "12px", "background": CARD,
+                           "border": f"1px solid {BORDER}", "color": TEXT,
+                           "cursor": "pointer", "padding": "8px 12px",
+                           "borderRadius": "8px", "fontWeight": "700"}),
+    ]),
+
+    # mob-content is in app.layout — rendered here via CSS show/hide
+    html.Div(id="mob-content-view", style={"padding": "16px",
+             "minHeight": "300px"}),
+
+    # Bottom tabs
+    html.Div(style={
+        "position": "fixed", "bottom": "0", "left": "0", "right": "0",
+        "maxWidth": "480px", "margin": "0 auto",
+        "background": PANEL, "borderTop": f"2px solid {BORDER}",
+        "display": "flex", "zIndex": "999",
+    }, children=[
+        html.Button("📊 Overview",  id="mob-tab-overview",  n_clicks=0,
+                    style={"flex":"1","fontSize":"11px","padding":"13px 2px",
+                           "background":GOLD,"color":BG,"border":"none",
+                           "cursor":"pointer","fontWeight":"800"}),
+        html.Button("📈 P&L",       id="mob-tab-pnl",       n_clicks=0,
+                    style={"flex":"1","fontSize":"11px","padding":"13px 2px",
+                           "background":CARD,"color":TEXT,"border":"none",
+                           "cursor":"pointer","fontWeight":"700"}),
+        html.Button("📅 Weekly",    id="mob-tab-weekly",    n_clicks=0,
+                    style={"flex":"1","fontSize":"11px","padding":"13px 2px",
+                           "background":CARD,"color":TEXT,"border":"none",
+                           "cursor":"pointer","fontWeight":"700"}),
+        html.Button("📋 Journal",   id="mob-tab-journal",   n_clicks=0,
+                    style={"flex":"1","fontSize":"11px","padding":"13px 2px",
+                           "background":CARD,"color":TEXT,"border":"none",
+                           "cursor":"pointer","fontWeight":"700"}),
+        html.Button("🔍 Scenarios", id="mob-tab-scenarios", n_clicks=0,
+                    style={"flex":"1","fontSize":"11px","padding":"13px 2px",
+                           "background":CARD,"color":TEXT,"border":"none",
+                           "cursor":"pointer","fontWeight":"700"}),
+    ]),
+])
+
+
 # ── App layout ────────────────────────────────────────────────
 app.layout = html.Div(
     style={"background": BG, "minHeight": "100vh", "padding": "28px",
@@ -421,7 +482,11 @@ app.layout = html.Div(
     children=[
         dcc.Store(id="page-store", data="overview"),
         dcc.Store(id="tf-store", data="All"),
+        dcc.Store(id="mob-tab-store", data="overview"),
         dcc.Interval(id="interval", interval=60_000, n_intervals=0),
+        html.Button("🔄", id="mob-refresh", n_clicks=0,
+                    style={"display":"none"}),
+        html.Div(id="mob-content", style={"display":"none"}),
         html.Div(id="page-content"),
     ]
 )
@@ -436,8 +501,12 @@ app.layout = html.Div(
 )
 def switch_page(*_):
     triggered = ctx.triggered_id
-    if triggered == "nav-journal":   return "journal"
-    if triggered == "nav-scenarios": return "scenarios"
+    if triggered == "nav-journal":      return "journal"
+    if triggered == "nav-scenarios":    return "scenarios"
+    if triggered == "nav-mobile":       return "mobile"
+    if triggered == "mob-nav-overview":  return "overview"
+    if triggered == "mob-nav-journal":   return "journal"
+    if triggered == "mob-nav-scenarios": return "scenarios"
     return "overview"
 
 @callback(
@@ -448,6 +517,7 @@ def render_page(page):
     if page == "daily":     return page_daily
     if page == "journal":   return page_journal
     if page == "scenarios": return page_scenarios
+    if page == "mobile":    return page_mobile
     return page_overview
 
 # ── Overview: timeframe store ─────────────────────────────────
@@ -1896,7 +1966,266 @@ def set_sort2(*_):
             btn_style(sort_key == "trades"))
 
 
+# ── Mobile: tab store ────────────────────────────────────────
+@callback(
+    Output("mob-tab-store",    "data"),
+    Output("mob-tab-overview", "style"),
+    Output("mob-tab-pnl",      "style"),
+    Output("mob-tab-weekly",   "style"),
+    Output("mob-tab-journal",  "style"),
+    Output("mob-tab-scenarios","style"),
+    Input("mob-tab-overview",  "n_clicks"),
+    Input("mob-tab-pnl",       "n_clicks"),
+    Input("mob-tab-weekly",    "n_clicks"),
+    Input("mob-tab-journal",   "n_clicks"),
+    Input("mob-tab-scenarios", "n_clicks"),
+    prevent_initial_call=True,
+)
+def set_mob_tab(*_):
+    tab_map = {
+        "mob-tab-overview":  "overview",
+        "mob-tab-pnl":       "pnl",
+        "mob-tab-weekly":    "weekly",
+        "mob-tab-journal":   "journal",
+        "mob-tab-scenarios": "scenarios",
+    }
+    active = tab_map.get(ctx.triggered_id, "overview")
+    tabs   = ["overview","pnl","weekly","journal","scenarios"]
+    icons  = {"overview":"📊 Overview","pnl":"📈 P&L","weekly":"📅 Weekly",
+              "journal":"📋 Journal","scenarios":"🔍 Scenarios"}
+
+    def tab_style(t):
+        is_active = (t == active)
+        return {"flex":"1","fontSize":"12px","padding":"12px 4px",
+                "background": GOLD if is_active else CARD,
+                "color": BG if is_active else TEXT,
+                "border":"none","cursor":"pointer","fontWeight":"800" if is_active else "700",
+                "whiteSpace":"nowrap"}
+
+    return (active, *[tab_style(t) for t in tabs])
+
+
+# ── Mobile: main content callback ─────────────────────────────
+@callback(
+    Output("mob-content-view", "children"),
+    Input("mob-tab-store", "data"),
+    Input("mob-refresh",   "n_clicks"),
+    Input("mob-refresh-real", "n_clicks"),
+    Input("page-store",    "data"),
+    Input("interval",      "n_intervals"),
+)
+def update_mobile(tab, _, __, page, ___):
+    if page != "mobile":
+        raise dash.exceptions.PreventUpdate
+
+    df_all = load_trades()
+    if df_all is None:
+        return html.Div("No data — run fetch first.",
+                        style={"color": MUTED, "padding": "40px", "textAlign": "center"})
+
+    now      = datetime.now(timezone.utc)
+    today    = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_ago = now - timedelta(days=7)
+    df_today = df_all[df_all["time"] >= today]
+    df_week  = df_all[df_all["time"] >= week_ago]
+
+    def card(label, value, color=TEXT, sub=None, full=False):
+        return html.Div(style={
+            "background": PANEL, "border": f"1px solid {BORDER}",
+            "borderRadius": "14px", "padding": "20px",
+            "textAlign": "center",
+            "gridColumn": "span 2" if full else "span 1",
+        }, children=[
+            html.Div(label, style={"fontSize": "10px", "color": MUTED,
+                                    "letterSpacing": "3px", "marginBottom": "8px",
+                                    "textTransform": "uppercase"}),
+            html.Div(value, style={"fontSize": "28px", "fontWeight": "800", "color": color}),
+            html.Div(sub,   style={"fontSize": "12px", "color": MUTED, "marginTop": "6px"}) if sub else None,
+        ])
+
+    def row(left, right, bold=False, color=TEXT, color_r=TEXT):
+        return html.Div(style={
+            "display": "flex", "justifyContent": "space-between",
+            "alignItems": "center", "padding": "14px 0",
+            "borderBottom": f"1px solid {BORDER}",
+        }, children=[
+            html.Span(left,  style={"fontSize": "14px", "color": MUTED}),
+            html.Span(right, style={"fontSize": "15px", "fontWeight": "700" if bold else "400",
+                                     "color": color_r}),
+        ])
+
+    section_title = lambda t: html.Div(t, style={
+        "fontSize": "10px", "color": MUTED, "letterSpacing": "3px",
+        "textTransform": "uppercase", "marginBottom": "14px", "marginTop": "20px",
+    })
+
+    # ── OVERVIEW TAB ──────────────────────────────────────────
+    if tab == "overview":
+        total_pnl = df_all["pnl"].sum()
+        today_pnl = df_today["pnl"].sum()
+        week_pnl  = df_week["pnl"].sum()
+        win_rate  = len(df_all[df_all["pnl"]>0]) / max(len(df_all),1) * 100
+        today_col = UP if today_pnl >= 0 else DOWN
+        today_lbl = f'{"+" if today_pnl>=0 else ""}£{today_pnl:.2f}'
+        if df_today.empty:
+            today_lbl = "No trades"
+            today_col = MUTED
+
+        return html.Div([
+            html.Div(style={
+                "display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "12px",
+            }, children=[
+                card("Today's P&L", today_lbl, today_col,
+                     f'{len(df_today)} trades', full=False),
+                card("This Week",
+                     f'{"+" if week_pnl>=0 else ""}£{week_pnl:.2f}',
+                     UP if week_pnl>=0 else DOWN),
+                card("Total P&L",
+                     f'{"+" if total_pnl>=0 else ""}£{total_pnl:.2f}',
+                     UP if total_pnl>=0 else DOWN),
+                card("Win Rate", f"{win_rate:.0f}%",
+                     UP if win_rate>=50 else DOWN,
+                     f"{len(df_all)} total trades"),
+            ]),
+            section_title("Account Stats"),
+            html.Div(style={"background": PANEL, "border": f"1px solid {BORDER}",
+                            "borderRadius": "14px", "padding": "0 16px"},
+            children=[
+                row("Best single trade",  f'+£{df_all["pnl"].max():.2f}',  True, color_r=UP),
+                row("Worst single trade", f'£{df_all["pnl"].min():.2f}',   True, color_r=DOWN),
+                row("Total commission",   f'£{df_all["commission"].sum():.2f}', color_r=MUTED),
+                row("Trading days",       str(df_all["time"].dt.date.nunique()), color_r=TEXT),
+            ]),
+        ])
+
+    # ── P&L TAB ───────────────────────────────────────────────
+    elif tab == "pnl":
+        last10 = df_all.sort_values("time", ascending=False).head(10)
+        rows = [section_title("Last 10 Trades")]
+        for _, r in last10.iterrows():
+            pc = UP if r["pnl"]>=0 else DOWN
+            dc = UP if r["direction"]=="BUY" else DOWN
+            rows.append(html.Div(style={
+                "display": "flex", "justifyContent": "space-between",
+                "alignItems": "center", "padding": "14px 0",
+                "borderBottom": f"1px solid {BORDER}",
+            }, children=[
+                html.Div([
+                    html.Div(r["time"].strftime("%d %b  %H:%M"),
+                             style={"fontSize": "14px", "color": TEXT, "fontWeight": "600"}),
+                    html.Div(r["direction"],
+                             style={"fontSize": "12px", "color": dc, "marginTop": "2px"}),
+                ]),
+                html.Div(f'{"+" if r["pnl"]>=0 else ""}£{r["pnl"]:.2f}',
+                         style={"fontSize": "18px", "fontWeight": "800", "color": pc}),
+            ]))
+        return html.Div(rows)
+
+    # ── WEEKLY TAB ────────────────────────────────────────────
+    elif tab == "weekly":
+        rows = [section_title("Last 14 Days")]
+        for i in range(13, -1, -1):
+            d     = (now - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
+            d_end = d + timedelta(days=1)
+            day_df  = df_all[(df_all["time"]>=d) & (df_all["time"]<d_end)]
+            pnl_d = day_df["pnl"].sum()
+            n_d   = len(day_df)
+            if n_d == 0:
+                color = MUTED
+                val   = "—"
+            else:
+                color = UP if pnl_d>0 else DOWN
+                val   = f'{"+" if pnl_d>=0 else ""}£{pnl_d:.2f}'
+
+            rows.append(html.Div(style={
+                "display": "flex", "justifyContent": "space-between",
+                "alignItems": "center", "padding": "13px 0",
+                "borderBottom": f"1px solid {BORDER}",
+            }, children=[
+                html.Span(d.strftime("%a  %d %b"),
+                          style={"fontSize": "14px", "color": MUTED, "width": "110px"}),
+                html.Span(f"{n_d} trades" if n_d>0 else "",
+                          style={"fontSize": "12px", "color": MUTED}),
+                html.Span(val, style={"fontSize": "15px", "fontWeight": "700", "color": color}),
+            ]))
+        return html.Div(rows)
+
+    # ── JOURNAL TAB ───────────────────────────────────────────
+    elif tab == "journal":
+        df_all["date"] = df_all["time"].dt.date
+        last7_days = sorted(df_all["date"].unique())[-7:]
+        rows = [section_title("Last 7 Trading Days")]
+        for d in reversed(last7_days):
+            day_df   = df_all[df_all["date"]==d]
+            pnl_d    = day_df["pnl"].sum()
+            n_d      = len(day_df)
+            wins_d   = len(day_df[day_df["pnl"]>0])
+            wr_d     = wins_d/n_d*100 if n_d>0 else 0
+            syms     = ", ".join([str(s) for s in day_df["symbol_id"].unique()])
+            pnl_c    = UP if pnl_d>=0 else DOWN
+            rows.append(html.Div(style={
+                "background": PANEL, "border": f"1px solid {BORDER}",
+                "borderRadius": "12px", "padding": "16px", "marginBottom": "10px",
+            }, children=[
+                html.Div(style={"display":"flex","justifyContent":"space-between",
+                                "marginBottom":"8px"}, children=[
+                    html.Span(str(d), style={"fontSize":"15px","fontWeight":"700","color":GOLD}),
+                    html.Span(f'{"+"if pnl_d>=0 else""}£{pnl_d:.2f}',
+                              style={"fontSize":"18px","fontWeight":"800","color":pnl_c}),
+                ]),
+                html.Div(f'{n_d} trades  ·  {wr_d:.0f}% win rate',
+                         style={"fontSize":"12px","color":MUTED}),
+            ]))
+        return html.Div(rows)
+
+    # ── SCENARIOS TAB ─────────────────────────────────────────
+    elif tab == "scenarios":
+        today_str = now.strftime("%Y-%m-%d")
+        df_sc = build_scenarios(today_str)
+        if df_sc.empty:
+            return html.Div([
+                section_title("Today's Scenarios"),
+                html.Div("No trades today.",
+                         style={"color": MUTED, "fontSize": "14px",
+                                "padding": "30px", "textAlign": "center"}),
+            ])
+        rows = [section_title(f"Today  ·  {now.strftime('%d %b %Y')}")]
+        for i, (_, sc) in enumerate(df_sc.iterrows()):
+            pnl   = sc["P&L (£)"]
+            color = SC_COLOURS[i % len(SC_COLOURS)]
+            pnl_c = UP if pnl>=0 else DOWN
+            rows.append(html.Div(style={
+                "background": PANEL,
+                "borderLeft": f"4px solid {color}",
+                "borderRadius": "12px", "padding": "16px",
+                "marginBottom": "10px",
+            }, children=[
+                html.Div(style={"display":"flex","justifyContent":"space-between",
+                                "marginBottom":"6px"}, children=[
+                    html.Span(f'Scenario {sc["Scenario"]}',
+                              style={"fontSize":"13px","fontWeight":"700","color":color,
+                                     "letterSpacing":"1px"}),
+                    html.Span(f'{"+"if pnl>=0 else""}£{pnl:.2f}',
+                              style={"fontSize":"20px","fontWeight":"800","color":pnl_c}),
+                ]),
+                html.Div(f'{sc["Start"]} → {sc["Last Close"]}  ·  {sc["Trades"]} trades',
+                         style={"fontSize":"13px","color":MUTED}),
+                html.Div(f'{sc["Buys"]}B / {sc["Sells"]}S  ·  {sc["Instruments"]}',
+                         style={"fontSize":"12px","color":MUTED,"marginTop":"4px"}),
+                html.Div(
+                    f'Exposure DD: £{sc["Exposure DD (£)"]:.2f}'
+                    if sc["Exposure DD (£)"] < 0 else "Exposure DD: £0.00",
+                    style={"fontSize":"12px","marginTop":"4px",
+                           "color": DOWN if sc["Exposure DD (£)"]<-20 else MUTED,
+                           "fontWeight":"600"}
+                ),
+            ]))
+        return html.Div(rows)
+
+    return html.Div()
+
+
 if __name__ == "__main__":
     print(f"\n  {SYMBOL} Trades Dashboard v{APP_VERSION}")
     print(f"  http://127.0.0.1:8050\n")
-    app.run(debug=True)
+    app.run(debug=True, host="0.0.0.0", port=8050)

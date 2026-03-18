@@ -40,8 +40,10 @@ if [ ! -f "data/symbols.json" ]; then
     python fetch_symbols.py
 fi
 
+LOCAL_IP=$(hostname -I | awk '{print $1}')
 echo ""
-echo "  ▶  Dashboard → http://127.0.0.1:8050"
+echo "  ▶  Local    → http://127.0.0.1:8050"
+echo "  ▶  Network  → http://$LOCAL_IP:8050  (open on your phone)"
 echo "  Ctrl+C to stop"
 echo ""
 python app.py
