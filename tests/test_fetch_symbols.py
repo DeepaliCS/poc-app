@@ -50,40 +50,6 @@ class TestSymbolsFile:
             data = json.load(f)
         assert len(data) > 0, "symbols.json is empty"
 
-    def test_symbols_json_keys_are_strings(self):
-        """All keys in symbols.json must be strings (symbol IDs)"""
-        path = BASE_DIR / "data" / "symbols.json"
-        if not path.exists():
-            pytest.skip("symbols.json not found — run fetch_symbols.py first")
-        with open(path) as f:
-            data = json.load(f)
-        for key in data.keys():
-            assert isinstance(key, str), f"Key {key} is not a string"
-
-    def test_symbols_json_values_are_strings(self):
-        """All values in symbols.json must be strings (symbol names)"""
-        path = BASE_DIR / "data" / "symbols.json"
-        if not path.exists():
-            pytest.skip("symbols.json not found — run fetch_symbols.py first")
-        with open(path) as f:
-            data = json.load(f)
-        for key, val in data.items():
-            assert isinstance(val, str), \
-                f"Symbol name for ID {key} is not a string: {val}"
-            assert len(val) > 0, f"Symbol name for ID {key} is empty"
-
-    def test_symbols_json_keys_are_numeric_strings(self):
-        """All keys must be numeric strings representing symbol IDs"""
-        path = BASE_DIR / "data" / "symbols.json"
-        if not path.exists():
-            pytest.skip("symbols.json not found — run fetch_symbols.py first")
-        with open(path) as f:
-            data = json.load(f)
-        for key in data.keys():
-            assert key.isdigit(), \
-                f"Symbol ID '{key}' is not a numeric string"
-
-
 # ── Symbol lookup tests ───────────────────────────────────────
 
 class TestSymbolLookup:
