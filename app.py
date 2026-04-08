@@ -375,6 +375,11 @@ page_scenarios = html.Div(id="page-scenarios", children=[
                            "background": CARD, "color": TEXT,
                            "border": f"1px solid {BORDER}",
                            "borderRadius": "6px", "cursor": "pointer"}),
+        html.Button("📉  Download Floating P&L", id="sc-float-btn", n_clicks=0,
+                    style={"fontSize": "13px", "padding": "9px 18px",
+                           "background": CARD, "color": TEXT,
+                           "border": f"1px solid {BORDER}",
+                           "borderRadius": "6px", "cursor": "pointer"}),
     ]),
 
     # Scenario summary cards
@@ -412,6 +417,7 @@ page_scenarios = html.Div(id="page-scenarios", children=[
               "borderRadius": "10px", "padding": "20px"}),
 
     dcc.Download(id="sc-download"),
+    dcc.Download(id="sc-float-download"),
     dcc.Store(id="sc-store", data={}),
 ])
 
@@ -2223,6 +2229,160 @@ def update_mobile(tab, _, __, page, ___):
         return html.Div(rows)
 
     return html.Div()
+
+
+# ── Scenarios: floating P&L generator ────────────────────────
+def build_floating_pnl(date_str):
+    """
+    Generate a time-series CSV of floating P&L for every position
+    traded on the given day.
+
+    For each price event while a position is open:
+      BUY  → floating = (current_price - entry_price) * volume * scale
+      SELL → floating = (entry_price - current_price) * volume * scale
+
+    Columns:
+      date, scenario, position_id, symbol, direction,
+      entry_price, exit_price, closed_pnl,
+      time, price_at_time, position_float_pnl, scenario_total_float
+    """
+    import math
+
+    df_all = pd.read_csv(DATA_FILE)
+    df_all["time"] = pd.to_datetime(df_all["time"], format="ISO8601", utc=True)
+    symbols = load_symbols()
+
+    sel_dt  = pd.Timestamp(date_str).tz_localize("UTC")
+    sel_end = sel_dt + timedelta(days=1)
+
+    day_all  = df_all[(df_all["time"] >= sel_dt) & (df_all["time"] < sel_end)].copy()
+    if day_all.empty:
+        return pd.DataFrame()
+
+    openings   = day_all[day_all["is_closing"] == False].copy()
+    closings   = day_all[day_all["is_closing"] == True].copy().sort_values("time").reset_index(drop=True)
+    all_prices = day_all[["time", "symbol_id", "fill_price"]].copy()
+
+    if closings.empty:
+        return pd.DataFrame()
+
+    # Assign scenarios (same logic as build_scenarios)
+    gaps = closings["time"].diff().dt.total_seconds().fillna(9999) / 60
+    closings["scenario"] = (gaps > 10).cumsum() + 1
+
+    # Build positions with price scale factor
+    positions = []
+    for _, cl in closings.iterrows():
+        op = openings[openings["position_id"] == cl["position_id"]]
+        if op.empty:
+            continue
+        op = op.iloc[0]
+        price_diff = cl["fill_price"] - op["fill_price"]
+        if op["direction"] == "SELL":
+            price_diff = -price_diff
+        vol   = op["volume"]
+        scale = (cl["pnl"] / (price_diff * vol)
+                 if (price_diff != 0 and vol != 0) else 1.0)
+        positions.append({
+            "scenario":    cl["scenario"],
+            "position_id": cl["position_id"],
+            "symbol_id":   cl["symbol_id"],
+            "symbol":      symbols.get(str(cl["symbol_id"]), str(cl["symbol_id"])),
+            "direction":   op["direction"],
+            "entry_price": op["fill_price"],
+            "exit_price":  cl["fill_price"],
+            "closed_pnl":  cl["pnl"],
+            "entry_time":  op["time"],
+            "exit_time":   cl["time"],
+            "volume":      vol,
+            "scale":       scale,
+        })
+
+    if not positions:
+        return pd.DataFrame()
+
+    pos_df = pd.DataFrame(positions)
+
+    # Generate one row per (position, price_event)
+    event_times = sorted(all_prices["time"].unique())
+    rows = []
+
+    for t in event_times:
+        # Which positions are open at time t?
+        open_pos = pos_df[
+            (pos_df["entry_time"] <= t) & (pos_df["exit_time"] > t)
+        ]
+        if open_pos.empty:
+            continue
+
+        # Calculate floating P&L per open position
+        scenario_totals = {}
+        pos_floats = {}
+
+        for _, pos in open_pos.iterrows():
+            # Best price seen for this symbol up to time t
+            sym_px = all_prices[
+                (all_prices["symbol_id"] == pos["symbol_id"]) &
+                (all_prices["time"] >= pos["entry_time"]) &
+                (all_prices["time"] <= t)
+            ]["fill_price"]
+
+            if sym_px.empty:
+                current_price = pos["entry_price"]
+            elif pos["direction"] == "BUY":
+                current_price = sym_px.iloc[-1]   # last known price
+            else:
+                current_price = sym_px.iloc[-1]
+
+            if pos["direction"] == "BUY":
+                float_pnl = (current_price - pos["entry_price"]) * pos["volume"] * pos["scale"]
+            else:
+                float_pnl = (pos["entry_price"] - current_price) * pos["volume"] * pos["scale"]
+
+            pos_floats[pos["position_id"]] = (current_price, round(float_pnl, 2))
+            sc = pos["scenario"]
+            scenario_totals[sc] = scenario_totals.get(sc, 0) + float_pnl
+
+        for _, pos in open_pos.iterrows():
+            if pos["position_id"] not in pos_floats:
+                continue
+            current_price, float_pnl = pos_floats[pos["position_id"]]
+            sc = pos["scenario"]
+            rows.append({
+                "date":                   date_str,
+                "scenario":               int(sc),
+                "position_id":            pos["position_id"],
+                "symbol":                 pos["symbol"],
+                "direction":              pos["direction"],
+                "entry_price":            round(pos["entry_price"], 5),
+                "exit_price":             round(pos["exit_price"], 5),
+                "closed_pnl":             round(pos["closed_pnl"], 2),
+                "time":                   t.strftime("%Y-%m-%d %H:%M:%S"),
+                "price_at_time":          round(current_price, 5),
+                "position_float_pnl":     float_pnl,
+                "scenario_total_float":   round(scenario_totals[sc], 2),
+            })
+
+    if not rows:
+        return pd.DataFrame()
+
+    return pd.DataFrame(rows).sort_values(["scenario", "time", "position_id"]).reset_index(drop=True)
+
+
+# ── Scenarios: floating P&L download ─────────────────────────
+@callback(
+    Output("sc-float-download",  "data"),
+    Input("sc-float-btn",        "n_clicks"),
+    dash.dependencies.State("sc-date-picker", "date"),
+    prevent_initial_call=True,
+)
+def download_floating_pnl(_, date_str):
+    if not date_str:
+        return None
+    df = build_floating_pnl(date_str)
+    if df.empty:
+        return None
+    return dcc.send_data_frame(df.to_csv, f"floating_pnl_{date_str}.csv", index=False)
 
 
 if __name__ == "__main__":
