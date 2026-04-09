@@ -908,6 +908,194 @@ def set_sort2(*_):
             btn_style(sort_key == "trades"))
 
 
+# ── Journal: table + summary ──────────────────────────────────
+@callback(
+    Output("journal-summary", "children"),
+    Output("journal-table",   "children"),
+    Input("sort-store",       "data"),
+    Input("interval",         "n_intervals"),
+)
+def update_journal(sort_key, _):
+    daily = build_daily_summary()
+    if daily is None or daily.empty:
+        return [], html.Div("No data — run fetch_data.py first.",
+                            style={"color": MUTED, "padding": "40px", "textAlign": "center"})
+
+    # Sort using actual column names
+    if sort_key == "pnl":
+        daily = daily.sort_values("P&L (£)", ascending=False)
+    elif sort_key == "trades":
+        daily = daily.sort_values("Trades", ascending=False)
+    else:
+        daily = daily.sort_values("Date", ascending=False)
+
+    total_pnl    = daily["P&L (£)"].sum()
+    total_days   = len(daily)
+    total_trades = daily["Trades"].sum()
+    avg_wr       = (daily["Win %"] * daily["Trades"]).sum() / max(total_trades, 1)
+    best_day     = daily["P&L (£)"].max()
+
+    summary = [
+        stat_card("Trading Days",  str(total_days),   TEXT),
+        stat_card("Total P&L",     f'{"+" if total_pnl>=0 else ""}£{total_pnl:.2f}',
+                  UP if total_pnl >= 0 else DOWN),
+        stat_card("Total Trades",  str(int(total_trades)), TEXT),
+        stat_card("Avg Win Rate",  f"{avg_wr:.1f}%",  UP if avg_wr >= 50 else DOWN),
+        stat_card("Best Day",      f'+£{best_day:.2f}', UP),
+    ]
+
+    # Header row
+    hdr_style = {"fontSize": "10px", "color": MUTED, "letterSpacing": "2px",
+                 "textTransform": "uppercase", "fontWeight": "600"}
+    grid_style = {
+        "display": "grid",
+        "gridTemplateColumns": "110px 90px 65px 70px 70px 80px 80px 1fr",
+        "alignItems": "center",
+    }
+    rows = [html.Div(style={**grid_style, "paddingBottom": "10px",
+                            "borderBottom": f"2px solid {BORDER}",
+                            "marginBottom": "4px"}, children=[
+        html.Span("Date",       style=hdr_style),
+        html.Span("P&L",        style=hdr_style),
+        html.Span("Win %",      style=hdr_style),
+        html.Span("Trades",     style=hdr_style),
+        html.Span("Best",       style=hdr_style),
+        html.Span("Worst",      style=hdr_style),
+        html.Span("Closed DD",  style=hdr_style),
+        html.Span("Instruments",style=hdr_style),
+    ])]
+
+    for _, r in daily.iterrows():
+        pnl   = r["P&L (£)"]
+        pnl_c = UP if pnl >= 0 else DOWN
+        wr    = r["Win %"]
+        dd    = r["Closed DD (£)"]
+        rows.append(html.Div(style={**grid_style,
+                                    "padding": "13px 0",
+                                    "borderBottom": f"1px solid {BORDER}"}, children=[
+            html.Span(str(r["Date"]),
+                      style={"fontSize": "13px", "color": GOLD, "fontWeight": "700"}),
+            html.Span(f'{"+" if pnl>=0 else ""}£{pnl:.2f}',
+                      style={"fontSize": "14px", "fontWeight": "800", "color": pnl_c}),
+            html.Span(f'{wr:.0f}%',
+                      style={"fontSize": "13px",
+                             "color": UP if wr >= 50 else DOWN}),
+            html.Span(str(int(r["Trades"])),
+                      style={"fontSize": "13px", "color": TEXT}),
+            html.Span(f'+£{r["Best (£)"]:.2f}',
+                      style={"fontSize": "12px", "color": UP}),
+            html.Span(f'£{r["Worst (£)"]:.2f}',
+                      style={"fontSize": "12px", "color": DOWN}),
+            html.Span(f'£{dd:.2f}' if dd < 0 else "—",
+                      style={"fontSize": "12px",
+                             "color": DOWN if dd < -20 else MUTED}),
+            html.Span(str(r["Instruments"]) if pd.notna(r["Instruments"]) else "—",
+                      style={"fontSize": "11px", "color": MUTED}),
+        ]))
+
+    return summary, html.Div(rows)
+
+
+# ── Scenarios: cards + table ──────────────────────────────────
+@callback(
+    Output("sc-cards",       "children"),
+    Output("sc-table",       "children"),
+    Output("sc-day-summary", "children"),
+    Input("sc-date-picker",  "date"),
+)
+def update_scenarios_page(date_str):
+    if not date_str:
+        return [], html.Div("Pick a date.", style={"color": MUTED}), ""
+
+    df_sc = build_scenarios(date_str)
+    if df_sc is None or df_sc.empty:
+        return (
+            [],
+            html.Div("No trades on this date.",
+                     style={"color": MUTED, "fontSize": "14px",
+                            "padding": "40px", "textAlign": "center"}),
+            "No trades",
+        )
+
+    total_pnl    = df_sc["P&L (£)"].sum()
+    total_trades = df_sc["Trades"].sum()
+    n_sc         = len(df_sc)
+    summary_str  = (f'{n_sc} scenarios  ·  {int(total_trades)} trades  ·  '
+                    f'{"+" if total_pnl>=0 else ""}£{total_pnl:.2f}')
+
+    # Summary cards (one per scenario)
+    cards = []
+    for i, (_, sc) in enumerate(df_sc.iterrows()):
+        pnl   = sc["P&L (£)"]
+        color = SC_COLOURS[i % len(SC_COLOURS)]
+        pnl_c = UP if pnl >= 0 else DOWN
+        cards.append(html.Div(style={
+            "background": PANEL,
+            "borderLeft": f"4px solid {color}",
+            "border": f"1px solid {BORDER}",
+            "borderRadius": "10px", "padding": "16px",
+            "minWidth": "170px", "flex": "1",
+        }, children=[
+            html.Div(f'Scenario {sc["Scenario"]}',
+                     style={"fontSize": "11px", "color": color,
+                            "letterSpacing": "1px", "fontWeight": "700",
+                            "marginBottom": "6px"}),
+            html.Div(f'{"+" if pnl>=0 else ""}£{pnl:.2f}',
+                     style={"fontSize": "22px", "fontWeight": "800", "color": pnl_c}),
+            html.Div(f'{int(sc["Trades"])} trades  ·  {sc["Buys"]}B / {sc["Sells"]}S',
+                     style={"fontSize": "11px", "color": MUTED, "marginTop": "4px"}),
+            html.Div(str(sc["Instruments"]),
+                     style={"fontSize": "10px", "color": MUTED, "marginTop": "2px"}),
+        ]))
+
+    # Table rows
+    hdr_style  = {"fontSize": "10px", "color": MUTED, "letterSpacing": "2px",
+                  "textTransform": "uppercase", "fontWeight": "600"}
+    grid_style = {
+        "display": "grid",
+        "gridTemplateColumns": "80px 90px 130px 1fr 70px 90px 100px",
+        "alignItems": "center",
+    }
+    rows = [html.Div(style={**grid_style, "paddingBottom": "10px",
+                            "borderBottom": f"2px solid {BORDER}",
+                            "marginBottom": "4px"}, children=[
+        html.Span("Scenario",   style=hdr_style),
+        html.Span("P&L",        style=hdr_style),
+        html.Span("Time range", style=hdr_style),
+        html.Span("Instruments",style=hdr_style),
+        html.Span("Trades",     style=hdr_style),
+        html.Span("Exposure DD",style=hdr_style),
+        html.Span("Buys / Sells",style=hdr_style),
+    ])]
+
+    for i, (_, sc) in enumerate(df_sc.iterrows()):
+        color = SC_COLOURS[i % len(SC_COLOURS)]
+        pnl   = sc["P&L (£)"]
+        pnl_c = UP if pnl >= 0 else DOWN
+        dd    = sc["Exposure DD (£)"]
+        rows.append(html.Div(style={**grid_style,
+                                    "padding": "13px 0",
+                                    "borderBottom": f"1px solid {BORDER}"}, children=[
+            html.Span(f'SC {sc["Scenario"]}',
+                      style={"fontSize": "13px", "color": color, "fontWeight": "700"}),
+            html.Span(f'{"+" if pnl>=0 else ""}£{pnl:.2f}',
+                      style={"fontSize": "14px", "fontWeight": "800", "color": pnl_c}),
+            html.Span(f'{sc["Start"]} → {sc["Last Close"]}',
+                      style={"fontSize": "11px", "color": MUTED}),
+            html.Span(str(sc["Instruments"]),
+                      style={"fontSize": "11px", "color": TEXT}),
+            html.Span(str(int(sc["Trades"])),
+                      style={"fontSize": "13px", "color": TEXT}),
+            html.Span(f'£{dd:.2f}' if dd < 0 else "—",
+                      style={"fontSize": "12px",
+                             "color": DOWN if dd < -20 else MUTED}),
+            html.Span(f'{sc["Buys"]}B / {sc["Sells"]}S',
+                      style={"fontSize": "12px", "color": MUTED}),
+        ]))
+
+    return cards, html.Div(rows), summary_str
+
+
 # ── Mobile: tab store ────────────────────────────────────────
 @callback(
     Output("mob-tab-store",    "data"),
