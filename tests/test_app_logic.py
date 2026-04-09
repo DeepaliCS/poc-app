@@ -95,7 +95,8 @@ class TestGetSymbolName:
         self._symbols = {"93": "XAUEUR", "92": "XAGEUR", "141": "XAUGBP"}
 
     def get_symbol_name(self, symbol_id, symbols):
-        return symbols.get(str(symbol_id), f"Symbol {symbol_id}")
+        from dashboard.helpers import get_symbol_name
+        return get_symbol_name(symbol_id, symbols)
 
     @pytest.mark.smoke
     def test_known_symbol_returns_name(self):
@@ -130,13 +131,14 @@ class TestBuildScenarios:
 
     @pytest.fixture
     def patch_data_file(self, tmp_path, monkeypatch):
-        """Redirect DATA_FILE in app.py to a temp CSV for testing."""
-        import app as app_module
+        """Create a temp data dir for testing."""
+        import dashboard.helpers as helpers_module
+        import dashboard.scenarios as scenarios_module
         data_path = tmp_path / "trades.csv"
-        monkeypatch.setattr(app_module, "DATA_FILE", data_path)
-        monkeypatch.setattr(app_module, "SYMBOLS_FILE", tmp_path / "symbols.json")
-        # Write a minimal symbols file
-        (tmp_path / "symbols.json").write_text(json.dumps({"93": "XAUEUR"}))
+        symbols_path = tmp_path / "symbols.json"
+        symbols_path.write_text(json.dumps({"93": "XAUEUR"}))
+        monkeypatch.setattr(helpers_module, "SYMBOLS_FILE", symbols_path)
+        monkeypatch.setattr(scenarios_module, "DATA_FILE", data_path)
         return data_path
 
     def write_trades(self, path, rows):
@@ -146,20 +148,22 @@ class TestBuildScenarios:
     @pytest.mark.core
     def test_empty_date_returns_empty_dataframe(self, patch_data_file):
         """A day with no trades should return an empty DataFrame."""
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
         # Write trades for a different date
         o, c = one_position(
             exit_time=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
             entry_time=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
         )
         self.write_trades(patch_data_file, [o, c])
-        result = app_module.build_scenarios("2026-02-01")
+        result = build_scenarios("2026-02-01", data_file=patch_data_file)
         assert result.empty
 
     @pytest.mark.core
     def test_single_trade_creates_one_scenario(self, patch_data_file):
         """One closing trade on a day should produce exactly one scenario."""
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         o, c = one_position(
             position_id=1,
             exit_time=datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc),
@@ -167,13 +171,15 @@ class TestBuildScenarios:
             pnl=25.0,
         )
         self.write_trades(patch_data_file, [o, c])
-        result = app_module.build_scenarios("2026-02-16")
+        result = build_scenarios("2026-02-16", data_file=patch_data_file)
         assert len(result) == 1
 
     @pytest.mark.core
     def test_two_trades_close_together_same_scenario(self, patch_data_file):
         """Two trades closing within 10 minutes should be ONE scenario."""
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
         o1, c1 = one_position(
             position_id=1,
@@ -188,13 +194,15 @@ class TestBuildScenarios:
             pnl=15.0,
         )
         self.write_trades(patch_data_file, [o1, c1, o2, c2])
-        result = app_module.build_scenarios("2026-02-16")
+        result = build_scenarios("2026-02-16", data_file=patch_data_file)
         assert len(result) == 1
 
     @pytest.mark.core
     def test_two_trades_far_apart_different_scenarios(self, patch_data_file):
         """Two trades with 15+ minute gap between exits should be TWO scenarios."""
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
         o1, c1 = one_position(
             position_id=1,
@@ -209,13 +217,15 @@ class TestBuildScenarios:
             pnl=15.0,
         )
         self.write_trades(patch_data_file, [o1, c1, o2, c2])
-        result = app_module.build_scenarios("2026-02-16")
+        result = build_scenarios("2026-02-16", data_file=patch_data_file)
         assert len(result) == 2
 
     @pytest.mark.core
     def test_scenario_pnl_sums_correctly(self, patch_data_file):
         """Scenario P&L must equal the sum of all trades in that scenario."""
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
         trades = []
         expected_pnl = 0.0
@@ -229,20 +239,22 @@ class TestBuildScenarios:
             expected_pnl += 10.0 + i
             trades += [o, c]
         self.write_trades(patch_data_file, trades)
-        result = app_module.build_scenarios("2026-02-16")
+        result = build_scenarios("2026-02-16", data_file=patch_data_file)
         assert len(result) == 1
         assert result.iloc[0]["P&L (£)"] == pytest.approx(expected_pnl, abs=0.01)
 
     @pytest.mark.core
     def test_scenario_has_required_columns(self, patch_data_file):
         """Output DataFrame must have all expected columns."""
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         o, c = one_position(
             exit_time=datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc),
             entry_time=datetime(2026, 2, 16, 9, 0, tzinfo=timezone.utc),
         )
         self.write_trades(patch_data_file, [o, c])
-        result = app_module.build_scenarios("2026-02-16")
+        result = build_scenarios("2026-02-16", data_file=patch_data_file)
         required = [
             "Scenario", "Start", "First Close", "Last Close",
             "Duration", "Trades", "Buys", "Sells",
@@ -255,7 +267,9 @@ class TestBuildScenarios:
     @pytest.mark.core
     def test_scenario_buys_sells_count_correct(self, patch_data_file):
         """Buys and Sells columns must reflect the correct direction counts."""
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
         o1, c1 = one_position(position_id=1, direction="BUY",
             entry_time=base - timedelta(minutes=10),
@@ -264,7 +278,7 @@ class TestBuildScenarios:
             entry_time=base - timedelta(minutes=8),
             exit_time=base + timedelta(minutes=2), pnl=8.0)
         self.write_trades(patch_data_file, [o1, c1, o2, c2])
-        result = app_module.build_scenarios("2026-02-16")
+        result = build_scenarios("2026-02-16", data_file=patch_data_file)
         assert result.iloc[0]["Buys"] == 2
         assert result.iloc[0]["Sells"] == 0
 
@@ -284,7 +298,7 @@ class TestCalcExposureDrawdown:
 
     @pytest.mark.core
     def test_empty_day_returns_none(self):
-        import app as app_module
+        from dashboard.journal import calc_exposure_drawdown
         df = self.make_df([{
             "deal_id": 1, "position_id": 1, "symbol_id": 93,
             "direction": "BUY", "volume": 1.0,
@@ -292,13 +306,15 @@ class TestCalcExposureDrawdown:
             "time": "2026-01-01T10:00:00+00:00",
             "pnl": 0.0, "commission": -0.5, "is_closing": False,
         }])
-        result = app_module.calc_exposure_drawdown("2026-02-16", df)
+        result = calc_exposure_drawdown("2026-02-16", df)
         assert result is None
 
     @pytest.mark.core
     def test_profitable_trade_returns_zero(self):
         """A trade that went straight to profit should have 0 exposure DD."""
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
         o, c = one_position(
             entry_price=3600.0,
@@ -308,7 +324,7 @@ class TestCalcExposureDrawdown:
             exit_time=base,
         )
         df = self.make_df([o, c])
-        result = app_module.calc_exposure_drawdown("2026-02-16", df)
+        result = calc_exposure_drawdown("2026-02-16", df)
         assert result == 0.0
 
     @pytest.mark.core
@@ -318,7 +334,9 @@ class TestCalcExposureDrawdown:
         We need multiple price events so the function has checkpoints
         to observe the price moving against the open position.
         """
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
 
         # Main losing position — open for 30 mins
@@ -341,7 +359,7 @@ class TestCalcExposureDrawdown:
             exit_time=base - timedelta(minutes=10),  # closes before pos 1
         )
         df = self.make_df([o1, c1, o2, c2])
-        result = app_module.calc_exposure_drawdown("2026-02-16", df)
+        result = calc_exposure_drawdown("2026-02-16", df)
         assert result is not None
         assert result < 0, f"Expected negative exposure DD, got {result}"
 
@@ -351,7 +369,9 @@ class TestCalcExposureDrawdown:
         Exposure DD should never be more negative than
         the total P&L of all losing trades combined.
         """
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
         rows = []
         total_loss = 0.0
@@ -367,7 +387,7 @@ class TestCalcExposureDrawdown:
             total_loss += (-20.0 - i * 5)
             rows += [o, c]
         df = self.make_df(rows)
-        result = app_module.calc_exposure_drawdown("2026-02-16", df)
+        result = calc_exposure_drawdown("2026-02-16", df)
         assert result is not None
         assert result >= total_loss, (
             f"Exposure DD {result} is more negative than total losses {total_loss}"
@@ -381,16 +401,19 @@ class TestBuildDailySummary:
 
     @pytest.fixture
     def patch_data_file(self, tmp_path, monkeypatch):
-        import app as app_module
+        import dashboard.helpers as helpers_module
         data_path = tmp_path / "trades.csv"
-        monkeypatch.setattr(app_module, "DATA_FILE", data_path)
-        monkeypatch.setattr(app_module, "SYMBOLS_FILE", tmp_path / "symbols.json")
-        (tmp_path / "symbols.json").write_text(json.dumps({"93": "XAUEUR"}))
+        symbols_path = tmp_path / "symbols.json"
+        symbols_path.write_text(json.dumps({"93": "XAUEUR"}))
+        monkeypatch.setattr(helpers_module, "SYMBOLS_FILE", symbols_path)
+        monkeypatch.setattr(helpers_module, "DATA_FILE", data_path)
         return data_path
 
     @pytest.mark.core
     def test_returns_dataframe(self, patch_data_file):
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
         o, c = one_position(
             exit_time=base,
@@ -398,13 +421,15 @@ class TestBuildDailySummary:
             pnl=30.0,
         )
         pd.DataFrame([o, c]).to_csv(patch_data_file, index=False)
-        result = app_module.build_daily_summary()
+        result = build_daily_summary(data_file=patch_data_file)
         assert isinstance(result, pd.DataFrame)
         assert len(result) > 0
 
     @pytest.mark.core
     def test_one_trading_day_produces_one_row(self, patch_data_file):
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
         o, c = one_position(
             exit_time=base,
@@ -412,16 +437,18 @@ class TestBuildDailySummary:
             pnl=30.0,
         )
         pd.DataFrame([o, c]).to_csv(patch_data_file, index=False)
-        result = app_module.build_daily_summary()
+        result = build_daily_summary(data_file=patch_data_file)
         assert len(result) == 1
 
     @pytest.mark.core
     def test_daily_summary_has_required_columns(self, patch_data_file):
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
         o, c = one_position(exit_time=base, entry_time=base - timedelta(hours=1))
         pd.DataFrame([o, c]).to_csv(patch_data_file, index=False)
-        result = app_module.build_daily_summary()
+        result = build_daily_summary(data_file=patch_data_file)
         required = ["Date", "P&L (£)", "Net (£)", "Trades", "Win %",
                     "Instruments", "Sessions", "First Session"]
         for col in required:
@@ -429,7 +456,9 @@ class TestBuildDailySummary:
 
     @pytest.mark.core
     def test_pnl_sum_is_correct(self, patch_data_file):
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
         rows = []
         for i, pnl in enumerate([10.0, 20.0, -5.0]):
@@ -441,12 +470,14 @@ class TestBuildDailySummary:
             )
             rows += [o, c]
         pd.DataFrame(rows).to_csv(patch_data_file, index=False)
-        result = app_module.build_daily_summary()
+        result = build_daily_summary(data_file=patch_data_file)
         assert result.iloc[0]["P&L (£)"] == pytest.approx(25.0, abs=0.01)
 
     @pytest.mark.core
     def test_win_rate_calculation(self, patch_data_file):
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
         rows = []
         # 3 wins, 1 loss = 75% win rate
@@ -459,7 +490,7 @@ class TestBuildDailySummary:
             )
             rows += [o, c]
         pd.DataFrame(rows).to_csv(patch_data_file, index=False)
-        result = app_module.build_daily_summary()
+        result = build_daily_summary(data_file=patch_data_file)
         assert result.iloc[0]["Win %"] == pytest.approx(75.0, abs=0.1)
 
 
@@ -470,29 +501,34 @@ class TestBuildFloatingPnl:
 
     @pytest.fixture
     def patch_data_file(self, tmp_path, monkeypatch):
-        import app as app_module
+        import dashboard.helpers as helpers_module
         data_path = tmp_path / "trades.csv"
-        monkeypatch.setattr(app_module, "DATA_FILE", data_path)
-        monkeypatch.setattr(app_module, "SYMBOLS_FILE", tmp_path / "symbols.json")
-        (tmp_path / "symbols.json").write_text(json.dumps({"93": "XAUEUR"}))
+        symbols_path = tmp_path / "symbols.json"
+        symbols_path.write_text(json.dumps({"93": "XAUEUR"}))
+        monkeypatch.setattr(helpers_module, "SYMBOLS_FILE", symbols_path)
+        monkeypatch.setattr(helpers_module, "DATA_FILE", data_path)
         return data_path
 
     @pytest.mark.core
     def test_empty_date_returns_empty_dataframe(self, patch_data_file):
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
         o, c = one_position(exit_time=base, entry_time=base - timedelta(hours=1))
         pd.DataFrame([o, c]).to_csv(patch_data_file, index=False)
-        result = app_module.build_floating_pnl("2026-02-16")
+        result = build_floating_pnl("2026-02-16", data_file=patch_data_file)
         assert result.empty
 
     @pytest.mark.core
     def test_returns_dataframe_with_correct_columns(self, patch_data_file):
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
         o, c = one_position(exit_time=base, entry_time=base - timedelta(hours=1))
         pd.DataFrame([o, c]).to_csv(patch_data_file, index=False)
-        result = app_module.build_floating_pnl("2026-02-16")
+        result = build_floating_pnl("2026-02-16", data_file=patch_data_file)
         if result.empty:
             pytest.skip("No price events available for floating P&L")
         required = [
@@ -507,7 +543,9 @@ class TestBuildFloatingPnl:
     @pytest.mark.core
     def test_float_pnl_zero_at_entry(self, patch_data_file):
         """At the moment of entry, floating P&L should be 0."""
-        import app as app_module
+        from dashboard.scenarios import build_scenarios
+        from dashboard.journal import build_daily_summary, calc_exposure_drawdown
+        from dashboard.floating_pnl import build_floating_pnl
         base = datetime(2026, 2, 16, 10, 0, tzinfo=timezone.utc)
         o, c = one_position(
             entry_price=3600.0,
@@ -517,7 +555,7 @@ class TestBuildFloatingPnl:
             exit_time=base,
         )
         pd.DataFrame([o, c]).to_csv(patch_data_file, index=False)
-        result = app_module.build_floating_pnl("2026-02-16")
+        result = build_floating_pnl("2026-02-16", data_file=patch_data_file)
         if result.empty:
             pytest.skip("No price events for this test")
         # First row should have 0 float (price hasn't moved yet)
