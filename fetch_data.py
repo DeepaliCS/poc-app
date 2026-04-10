@@ -105,6 +105,7 @@ def fetch():
             ProtoOAApplicationAuthReq, ProtoOAApplicationAuthRes,
             ProtoOAAccountAuthReq,     ProtoOAAccountAuthRes,
             ProtoOADealListReq,        ProtoOADealListRes,
+            ProtoOATraderReq,          ProtoOATraderRes,
             ProtoOAErrorRes,
         )
         from twisted.internet import reactor
@@ -123,12 +124,13 @@ def fetch():
     print(f"  → Fetching {len(chunks)} chunk(s)…\n")
 
     all_rows = []
-    state    = {"chunk_idx": 0, "done": False, "error": None}
+    state    = {"chunk_idx": 0, "done": False, "error": None, "balance": None}
     client   = Client(HOST, PORT, TcpProtocol)
 
     APP_AUTH_RES     = ProtoOAApplicationAuthRes().payloadType
     ACCOUNT_AUTH_RES = ProtoOAAccountAuthRes().payloadType
     DEAL_LIST_RES    = ProtoOADealListRes().payloadType
+    TRADER_RES       = ProtoOATraderRes().payloadType
     ERROR_RES        = ProtoOAErrorRes().payloadType
 
     def extract(message, cls):
@@ -149,13 +151,50 @@ def fetch():
         c.send(req)
 
     def finish():
+        # ── Save account balance snapshot ─────────────────────
+        balance = state.get("balance")
+        if balance is not None:
+            import json as _json
+            account_data = {
+                "balance":    balance,
+                "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            }
+            account_path = DATA_DIR / "account.json"
+            with open(account_path, "w") as f:
+                _json.dump(account_data, f, indent=2)
+            print(f"  ✓ Account balance   : £{balance:,.2f}  → {account_path}")
+        else:
+            balance = None
+            print("  ⚠  No account balance fetched — pnl_pct and volume_pct will be blank.")
+
         if all_rows:
             df_new = pd.DataFrame(all_rows)
             df_new = df_new.drop_duplicates(subset=["deal_id"])
 
+            # ── Enrich with account balance metrics ───────────
+            df_new["balance_at_fetch"] = balance if balance is not None else None
+            if balance and balance > 0:
+                df_new["pnl_pct"]    = (df_new["pnl"]    / balance * 100).round(4)
+                df_new["volume_pct"] = (df_new["volume"]  / balance * 100).round(4)
+            else:
+                df_new["pnl_pct"]    = None
+                df_new["volume_pct"] = None
+
             # Merge with existing cache if incremental
             if mode == "incremental" and OUTPUT.exists():
                 df_old = pd.read_csv(OUTPUT)
+                # Backfill balance columns into old rows if they don't exist yet
+                for col in ["balance_at_fetch", "pnl_pct", "volume_pct"]:
+                    if col not in df_old.columns:
+                        if col == "balance_at_fetch":
+                            df_old[col] = balance
+                        elif balance and balance > 0:
+                            if col == "pnl_pct":
+                                df_old[col] = (df_old["pnl"] / balance * 100).round(4)
+                            elif col == "volume_pct":
+                                df_old[col] = (df_old["volume"] / balance * 100).round(4)
+                        else:
+                            df_old[col] = None
                 df_combined = pd.concat([df_old, df_new], ignore_index=True)
                 df_combined = df_combined.drop_duplicates(subset=["deal_id"])
                 # Convert time column to string consistently before sorting
@@ -219,6 +258,16 @@ def fetch():
 
         elif ptype == ACCOUNT_AUTH_RES:
             print("  ✓ Account authenticated\n")
+            # Fetch account balance before pulling deals
+            req = ProtoOATraderReq()
+            req.ctidTraderAccountId = ACCOUNT_ID
+            c.send(req)
+
+        elif ptype == TRADER_RES:
+            res     = extract(message, ProtoOATraderRes)
+            balance = res.trader.balance / 100   # cTrader sends balance in cents
+            state["balance"] = balance
+            print(f"  ✓ Account balance    : £{balance:,.2f}")
             request_next_chunk(c)
 
         elif ptype == DEAL_LIST_RES:
